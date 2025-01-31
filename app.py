@@ -7,17 +7,17 @@ from blueprints.auth import auth_bp
 from blueprints.dashboard import dashboard_bp
 from blueprints.friend_request import friend_requests_bp
 from blueprints.chat import chat_bp
+from flask_migrate import Migrate
 
 # Создаем экземпляр приложения
+login_manager = LoginManager()
 app = create_app()
 
-# Инициализация базы данных
+# Инициализация Flask
 db.init_app(app)
-
-# Инициализация Flask-Login
-login_manager = LoginManager()
 login_manager.init_app(app)
 socketio.init_app(app)
+migrate = Migrate(app, db)
 
 # Загрузка пользователя по его ID
 @login_manager.user_loader
@@ -37,7 +37,6 @@ app.register_blueprint(chat_bp)
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-
-    # Запускаем сервер с WebSocket через SocketIO
+        # Запускаем сервер с WebSocket через SocketIO
         socketio.run(app, debug=True)
     

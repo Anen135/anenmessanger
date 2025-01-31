@@ -7,8 +7,15 @@ $(document).on('click', '.nav-link', function() {
     const chatId = $(this).data('chat-id');
     const chatType = $(this).data('chat-type');  // Получаем тип чата (personal или group)
 
+    // Убираем класс active у всех ссылок
+    $('.nav-link').removeClass('active');
+
+    // Добавляем класс active к текущему чату
+    $(this).addClass('active');
+
     // Отправляем запрос на сервер для получения истории чата
     socket.emit('get_chat_history', { chat_id: chatId, chat_type: chatType });
+
     // Очищаем окно сообщений
     $('#messages').empty();
 });
@@ -21,27 +28,6 @@ socket.on('chat_history', function(data) {
         $('#messages').html('<p class="error-message">' + data.error + '</p>');
         return;
     }
-
-    // Заполняем окно сообщениями из истории
-    messages.forEach(function(message) {
-        $('#messages').append(
-            '<p><strong>' + message.sender_username + ':</strong> ' + message.content + '</p>'
-        );
-    });
-});
-
-
-// Обработчик получения истории чата (группового или личного)
-socket.on('chat_history', function(data) {
-    const messages = data.messages;
-
-    if (data.error) {
-        $('#messages').html('<p class="error-message">' + data.error + '</p>');
-        return;
-    }
-
-    // Очищаем окно сообщений
-    $('#messages').empty();
 
     // Заполняем окно сообщениями из истории
     messages.forEach(function(message) {

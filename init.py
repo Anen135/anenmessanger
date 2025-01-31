@@ -10,4 +10,4 @@ def create_app():
     return app
 
 # Для WebSocket подключаем SocketIO
-socketio = SocketIO()
+socketio = SocketIO(async_mode = 'eventlet')
