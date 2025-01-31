@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body>
+    <div class="dashboard">
+        <div class="header">
+            <h4 class="my-0">Dashboard</h4>
+            <div>
+                <button class="btn btn-custom" id="send-friend-request">Отправить запрос</button>
+                <button class="btn btn-custom" id="show-requests-button">Запросы в друзья</button>
+                <button class="btn btn-custom" id="create-group-button">Создать группу</button>
+                <a href="#" class="btn btn-custom">Настройки профиля</a>
+            </div>
+            
+        </div>
+        <div class="main">
+            <div class="sidebar">
+                <h5 class="text-center my-4">Мои чаты</h5>
+                <!-- В разделе "Мои чаты" будут отображаться все чаты -->
+                <div class="chats-section">
+                    <ul class="nav flex-column" id="chat-list">
+                        <!-- Перебираем все чаты -->
+                        {% for chat in chats %}
+                        <li class="nav-item">
+                            <!-- Проверяем тип чата -->
+                            {% if chat.type == "friend" %}
+                            <a class="nav-link chat_button" href="javascript:void(0);" id="chat-{{ chat.id }}" data-chat-id="{{ chat.id }}" data-chat-type="friend">
+                                {{ chat.name }}
+                            </a>
+                            {% elif chat.type == "group" %}
+                            <a class="nav-link chat_button" href="javascript:void(0);" id="group-chat-{{ chat.id }}" data-chat-id="{{ chat.id }}" data-chat-type="group">
+                                📢 {{ chat.name }}
+                            </a>
+                            {% endif %}
+                        </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+
+
+                <a class="nav-link text-center mt-auto mb-4" href="{{ url_for('auth.logout') }}">Выйти</a>
+            </div>
+            <div class="chat-window">
+                <div class="messages" id="messages">
+                    <!-- Сообщения чатов будут здесь -->
+                </div>
+
+                <!-- Место для отображения системных сообщений -->
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        <div class="flash-messages">
+                            {% for category, message in messages %}
+                                <div class="flash-message {{ category }}">
+                                    {{ message }}
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                {% endwith %}
+
+                <div class="chat-input">
+                    <input type="text" id="message-input" placeholder="Напишите сообщение...">
+                    <button id="send-button" class="btn btn-custom">Отправить</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно для ввода никнейма -->
+    <div class="modal fade" id="nicknameModal" tabindex="-1" role="dialog" aria-labelledby="nicknameModalLabel" aria-hidden="true" data-backdrop="static" data-keyboard="false">
+        <div class="modal-dialog" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="nicknameModalLabel">Введите никнейм</h5>
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">×</span>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <input type="text" id="friend-username" placeholder="Введите ник для добавления" class="form-control">
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Закрыть</button>
+                    <button type="button" class="btn btn-primary" id="confirm-send-request">Отправить запрос</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Модальное окно для отображения запросов в друзья -->
+    <div class="modal fade" id="requestsModal" tabindex="-1" role="dialog" aria-labelledby="requestsModalLabel" aria-hidden="true">
+        <div class="modal-dialog" role="document">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="requestsModalLabel">Запросы в друзья</h5>
+                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
+                        <span aria-hidden="true">×</span>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <ul id="friend-requests-list">
+                        <!-- Список запросов будет загружен здесь через AJAX -->
+                    </ul>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Закрыть</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script> <!-- Подключаем библиотеку для работы с сокетами -->
+    <script src="{{ url_for('static', filename='js/group_request.js') }}"></script> <!-- Подключаем скрипты для работы дашборда -->
+    <script src="{{ url_for('static', filename='js/chat.js') }}"></script> <!-- Подключаем скрипты для работы чата -->
+    <script src="{{ url_for('static', filename='js/friend_request.js') }}"></script> <!-- Подключаем скрипты для работы с друзьями -->
+</body>
+</html>
