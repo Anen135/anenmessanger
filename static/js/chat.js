@@ -1,67 +1,62 @@
 // Устанавливаем соединение с WebSocket
 const socket = io.connect(window.location.origin);
 
-// При клике на чат (личный или групповой) загружаем историю сообщений
-$(document).on('click', '.chat_button', function () {
+// Обработчик клика на чат
+$(document).on('click', '.nav-link', function() {
+    // Получаем ID чата (друга)
     const chatId = $(this).data('chat-id');
-    const chatType = $(this).data('chat-type'); // friend или group
-
+    
+    // Отправляем запрос на сервер для получения истории чата
+    socket.emit('get_chat_history', { chat_id: chatId });
+    
     // Очищаем окно сообщений
     $('#messages').empty();
-
-    // Запрашиваем историю сообщений
-    socket.emit('get_chat_history', { chat_id: chatId, chat_type: chatType });
 });
 
-// Обработка получения истории сообщений
-socket.on('chat_history', function (data) {
-    if (data.error) {
-        $('#messages').html('<p class="error-message">' + data.error + '</p>');
+$('#chat-list').on('click', '.nav-link', function() {
+    // Убираем класс active с других чатов
+    $('#chat-list .nav-link').removeClass('active');
+    
+    // Добавляем класс active к текущему чату
+    $(this).addClass('active');
+});
+
+
+// Обработчик получения истории чата
+socket.on('chat_history', function(messages) {
+    // Если есть ошибки, выводим их
+    if (messages.error) {
+        $('#messages').html('<p class="error-message">' + messages.error + '</p>');
         return;
     }
 
     // Очищаем окно сообщений
     $('#messages').empty();
 
-    // Добавляем сообщения в окно
-    data.messages.forEach(function (message) {
+    // Заполняем окно сообщениями из истории
+    messages.forEach(function(message) {
         $('#messages').append(
             '<p><strong>' + message.sender_username + ':</strong> ' + message.content + '</p>'
         );
     });
 });
 
-// Обработка ошибок при получении истории
-socket.on('chat_history_error', function (error) {
-    alert(error.error);
-});
-
-
-$('#chat-list').on('click', '.chat_button', function() {
-    // Убираем класс active с других чатов
-    $('#chat-list .chat_button').removeClass('active');
-    
-    // Добавляем класс active к текущему чату
-    $(this).addClass('active');
-});
-
-$('#send-button').on('click', function () {
+// Обработчик отправки сообщений
+$('#send-button').on('click', function() {
     const messageContent = $('#message-input').val();
-    const activeChat = $('#chat-list .chat_button.active');
 
-    // Получаем ID и тип текущего чата
-    const chatId = activeChat.data('chat-id');
-    const chatType = activeChat.data('chat-type'); // friend или group
+    // Получаем текущего собеседника через контекст this (элемент, на который был клик)
+    const receiverId = $('#chat-list .nav-link.active').data('chat-id'); 
 
-    if (!chatId || !messageContent) {
-        alert("Выберите чат и введите сообщение.");
+    // Проверяем, есть ли receiverId
+    if (!receiverId) {
+        alert("Выберите собеседника для отправки сообщения.");
         return;
     }
 
     // Отправляем сообщение через WebSocket
     socket.emit('send_message', {
-        chat_id: chatId,
-        chat_type: chatType,
+        receiver_id: receiverId,
         message_content: messageContent
     });
 
@@ -70,27 +65,6 @@ $('#send-button').on('click', function () {
 });
 
 
-$('#create-group-button').on('click', function () {
-    const groupName = prompt('Введите название группы:');
-    if (groupName) {
-        $.ajax({
-            url: '/create_group',
-            method: 'POST',
-            contentType: 'application/json',
-            data: JSON.stringify({ group_name: groupName }),
-            success: function (data) {
-                if (data.success) {
-                    alert('Группа успешно создана!');
-                } else {
-                    alert(`Ошибка: ${data.message}`);
-                }
-            },
-            error: function (xhr, status, error) {
-                console.error('Ошибка:', error);
-            }
-        });
-    }
-});
 
 // Обработчик успешной отправки сообщения
 socket.on('new_message', function(message) {

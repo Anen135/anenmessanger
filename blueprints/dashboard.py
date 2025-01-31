@@ -11,16 +11,10 @@ def dashboard():
     # Получаем всех друзей пользователя
     friends = current_user.friends.all()
 
-    # Получаем все группы, в которых состоит пользователь
-    groups = current_user.groups
-
-    # Формируем общий список чатов: друзей и групп
-    chats = \
-    [ {"id": friend.id, "name": friend.username, "type": "friend"} for friend in friends ] + \
-    [ {"id": group.id, "name": group.name, "type": "group"} for group in groups ]
+    # Получаем все чаты, включая друзей
+    chats = friends
 
     return render_template('dashboard.html', user=current_user, chats=chats)
-
 
 @dashboard_bp.route('/')
 @dashboard_bp.route('/index')

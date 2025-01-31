@@ -7,8 +7,6 @@ from blueprints.auth import auth_bp
 from blueprints.dashboard import dashboard_bp
 from blueprints.friend_request import friend_requests_bp
 from blueprints.chat import chat_bp, socketio
-from blueprints.group_request import group_requests_bp
-from blueprints.group import group_bp, socketio as group_socketio
 
 # Создаем экземпляр приложения
 app = create_app()
@@ -20,7 +18,6 @@ db.init_app(app)
 login_manager = LoginManager()
 login_manager.init_app(app)
 socketio.init_app(app)
-group_socketio.init_app(app)
 
 # Загрузка пользователя по его ID
 @login_manager.user_loader
@@ -35,8 +32,6 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(friend_requests_bp)
 app.register_blueprint(chat_bp)
-app.register_blueprint(group_requests_bp)
-app.register_blueprint(group_bp)
 
 # Основной запуск приложения
 if __name__ == '__main__':

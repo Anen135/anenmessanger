@@ -14,10 +14,8 @@
             <div>
                 <button class="btn btn-custom" id="send-friend-request">Отправить запрос</button>
                 <button class="btn btn-custom" id="show-requests-button">Запросы в друзья</button>
-                <button class="btn btn-custom" id="create-group-button">Создать группу</button>
                 <a href="#" class="btn btn-custom">Настройки профиля</a>
             </div>
-            
         </div>
         <div class="main">
             <div class="sidebar">
@@ -25,25 +23,14 @@
                 <!-- В разделе "Мои чаты" будут отображаться все чаты -->
                 <div class="chats-section">
                     <ul class="nav flex-column" id="chat-list">
-                        <!-- Перебираем все чаты -->
+                        <!-- Здесь будут отображаться все чаты -->
                         {% for chat in chats %}
                         <li class="nav-item">
-                            <!-- Проверяем тип чата -->
-                            {% if chat.type == "friend" %}
-                            <a class="nav-link chat_button" href="javascript:void(0);" id="chat-{{ chat.id }}" data-chat-id="{{ chat.id }}" data-chat-type="friend">
-                                {{ chat.name }}
-                            </a>
-                            {% elif chat.type == "group" %}
-                            <a class="nav-link chat_button" href="javascript:void(0);" id="group-chat-{{ chat.id }}" data-chat-id="{{ chat.id }}" data-chat-type="group">
-                                📢 {{ chat.name }}
-                            </a>
-                            {% endif %}
+                            <a class="nav-link" href="javascript:void(0);" id="chat-{{ chat.id }}" data-chat-id="{{ chat.id }}">{{ chat.username }}</a>
                         </li>
                         {% endfor %}
                     </ul>
                 </div>
-
-
                 <a class="nav-link text-center mt-auto mb-4" href="{{ url_for('auth.logout') }}">Выйти</a>
             </div>
             <div class="chat-window">
@@ -118,7 +105,6 @@
     <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script> <!-- Подключаем библиотеку для работы с сокетами -->
-    <script src="{{ url_for('static', filename='js/group_request.js') }}"></script> <!-- Подключаем скрипты для работы дашборда -->
     <script src="{{ url_for('static', filename='js/chat.js') }}"></script> <!-- Подключаем скрипты для работы чата -->
     <script src="{{ url_for('static', filename='js/friend_request.js') }}"></script> <!-- Подключаем скрипты для работы с друзьями -->
 </body>

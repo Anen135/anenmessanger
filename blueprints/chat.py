@@ -1,7 +1,7 @@
 from flask import Blueprint, render_template, request, jsonify
 from flask_socketio import SocketIO, emit
-from models import db, User, Message, Group
-from flask_login import current_user, login_required
+from models import db, User, Message, Friendship
+from flask_login import current_user
 
 # Создаем Blueprint для чата
 chat_bp = Blueprint('chat', __name__)
@@ -54,85 +54,90 @@ def handle_get_chat_history(friend_id):
     return jsonify({"chat_history": chat_history})
 
 
+# Обработчик WebSocket для получения истории чата
 @socketio.on('get_chat_history')
 def handle_get_chat_history(data):
-    chat_id = data.get('chat_id')
-    chat_type = data.get('chat_type')  # friend или group
+    if 'chat_id' not in data:
+        return
+    friend_id = data['chat_id']
 
-    if chat_type == "friend":
-        # Получаем историю сообщений между двумя пользователями
-        messages = Message.query.filter(
-            ((Message.sender_id == current_user.id) & (Message.receiver_id == chat_id)) |
-            ((Message.sender_id == chat_id) & (Message.receiver_id == current_user.id))
-        ).order_by(Message.timestamp.asc()).all()
-    elif chat_type == "group":
-        # Получаем историю сообщений группы
-        messages = Message.query.filter_by(group_id=chat_id).order_by(Message.timestamp.asc()).all()
-    else:
-        emit('chat_history_error', {"error": "Некорректный тип чата"})
+    # Проверяем, авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('chat_history', {"error": "Пользователь не авторизован"})
         return
 
-    # Формируем историю чата
+    # Проверяем, являются ли два пользователя друзьями
+    friend = User.query.get(friend_id)
+    
+    if not friend or not is_friend_with(current_user, friend):
+        emit('chat_history', {"error": "Нет доступа к чату с этим пользователем"})
+        return
+
+    # Получаем все сообщения между текущим пользователем и выбранным другом
+    messages = Message.query.filter(
+        ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
+        ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
+    ).order_by(Message.timestamp.asc()).all()
+
+    # Форматируем сообщения для отправки на клиент
     chat_history = [
         {
-            "sender_username": message.sender.username,
+            "sender_username": User.query.get(message.sender_id).username,  # Получаем имя отправителя по sender_id
             "content": message.content,
-            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")  # Преобразуем datetime в строку
         }
         for message in messages
     ]
-
-    emit('chat_history', {"chat_id": chat_id, "messages": chat_history})
+    
+    emit('chat_history', chat_history)
 
 
 # Обработчик WebSocket для отправки сообщений
 @socketio.on('send_message')
-@login_required
 def handle_send_message(data):
-    chat_id = data.get('chat_id')
-    chat_type = data.get('chat_type')  # friend или group
+    # Получаем receiver_id и message_content из данных
+    receiver_id = data.get('receiver_id')
     message_content = data.get('message_content')
+    
+    # Проверка, авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('new_message', {"error": "Пользователь не авторизован"})
+        return
+    
+    # Проверка на наличие receiver_id и message_content
+    if not receiver_id or not message_content:
+        emit('new_message', {"error": "Не указаны получатель или сообщение"})
+        return
 
-    if chat_type == "friend":
-        # Отправка личного сообщения
-        receiver = User.query.get(chat_id)
-        if not receiver:
-            emit('send_message_error', {"error": "Получатель не найден"})
-            return
+    # Получаем получателя сообщения
+    receiver = User.query.get(receiver_id)
+    if not receiver:
+        emit('new_message', {"error": "Получатель не найден"})
+        return
 
-        new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
-        db.session.add(new_message)
-        db.session.commit()
+    # Проверяем, что текущий пользователь является другом получателя
+    if not is_friend_with(current_user, receiver):
+        emit('new_message', {"error": "Вы не можете отправить сообщение этому пользователю"})
+        return
 
-        emit('new_message', {
-            "sender_username": current_user.username,
-            "content": message_content,
-            "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        }, room=f"user_{receiver.id}")
+    # Сохраняем новое сообщение в базе данных
+    new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
+    db.session.add(new_message)
+    db.session.commit()
+    
+    # Отправляем новое сообщение всем участникам чата
+    emit('new_message', {
+        "sender_username": current_user.username,
+        "content": message_content,
+        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    })
 
-    elif chat_type == "group":
-        # Отправка сообщения в группу
-        group = Group.query.get(chat_id)
-        if not group:
-            emit('send_message_error', {"error": "Группа не найдена"})
-            return
 
-        if not any(member.id == current_user.id for member in group.members):
-            emit('send_message_error', {"error": "Вы не состоите в этой группе"})
-            return
-
-        new_message = Message(content=message_content, sender_id=current_user.id, group_id=group.id)
-        db.session.add(new_message)
-        db.session.commit()
-
-        emit('new_message', {
-            "sender_username": current_user.username,
-            "content": message_content,
-            "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        }, room=f"group_{group.id}")
-
-    else:
-        emit('send_message_error', {"error": "Некорректный тип чата"})
-
+# Добавляем метод к классу User
+def is_friend_with(user, friend):
+    """Проверка, является ли два пользователя друзьями."""
+    if not user.is_authenticated:
+        return False
+    return friend in user.friends.all()
 
 User.is_friend_with = is_friend_with
