@@ -1,13 +1,12 @@
 from flask import Blueprint, render_template, request, jsonify
-from flask_socketio import SocketIO, emit
+from flask_socketio import emit
 from models import db, User, Message, Friendship
 from flask_login import current_user
+from init import socketio
 
 # Создаем Blueprint для чата
 chat_bp = Blueprint('chat', __name__)
 
-# Для WebSocket подключаем SocketIO
-socketio = SocketIO()
 
 # Маршрут для страницы чата
 @chat_bp.route('/chat')

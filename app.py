@@ -1,12 +1,12 @@
 from flask import Flask
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
-from init import create_app
+from init import create_app, socketio
 from models import db, User
 from blueprints.auth import auth_bp
 from blueprints.dashboard import dashboard_bp
 from blueprints.friend_request import friend_requests_bp
-from blueprints.chat import chat_bp, socketio
+from blueprints.chat import chat_bp
 
 # Создаем экземпляр приложения
 app = create_app()

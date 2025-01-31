@@ -14,6 +14,7 @@
             <div>
                 <button class="btn btn-custom" id="send-friend-request">Отправить запрос</button>
                 <button class="btn btn-custom" id="show-requests-button">Запросы в друзья</button>
+                <button class="btn btn-custom" id="create-group-button">Создать группу</button>
                 <a href="#" class="btn btn-custom">Настройки профиля</a>
             </div>
         </div>
@@ -58,53 +59,15 @@
             </div>
         </div>
     </div>
-
-    <!-- Модальное окно для ввода никнейма -->
-    <div class="modal fade" id="nicknameModal" tabindex="-1" role="dialog" aria-labelledby="nicknameModalLabel" aria-hidden="true" data-backdrop="static" data-keyboard="false">
-        <div class="modal-dialog" role="document">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="nicknameModalLabel">Введите никнейм</h5>
-                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-                        <span aria-hidden="true">×</span>
-                    </button>
-                </div>
-                <div class="modal-body">
-                    <input type="text" id="friend-username" placeholder="Введите ник для добавления" class="form-control">
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Закрыть</button>
-                    <button type="button" class="btn btn-primary" id="confirm-send-request">Отправить запрос</button>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- Модальное окно для отображения запросов в друзья -->
-    <div class="modal fade" id="requestsModal" tabindex="-1" role="dialog" aria-labelledby="requestsModalLabel" aria-hidden="true">
-        <div class="modal-dialog" role="document">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h5 class="modal-title" id="requestsModalLabel">Запросы в друзья</h5>
-                    <button type="button" class="close" data-dismiss="modal" aria-label="Close">
-                        <span aria-hidden="true">×</span>
-                    </button>
-                </div>
-                <div class="modal-body">
-                    <ul id="friend-requests-list">
-                        <!-- Список запросов будет загружен здесь через AJAX -->
-                    </ul>
-                </div>
-                <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-dismiss="modal">Закрыть</button>
-                </div>
-            </div>
-        </div>
-    </div>
+    <!-- Модальные окна -->
+    {% include 'modals/nickname_modal.html' %}
+    {% include 'modals/create_group_modal.html' %}
+    {% include 'modals/requests_modal.html' %}
 
     <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script> <!-- Подключаем библиотеку для работы с сокетами -->
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script> <!-- Подключаем скрипты для работы дашборда -->
     <script src="{{ url_for('static', filename='js/chat.js') }}"></script> <!-- Подключаем скрипты для работы чата -->
     <script src="{{ url_for('static', filename='js/friend_request.js') }}"></script> <!-- Подключаем скрипты для работы с друзьями -->
 </body>

@@ -72,4 +72,5 @@ socket.on('new_message', function(message) {
     $('#messages').append(
         '<p><strong>' + message.sender_username + ':</strong> ' + message.content + '</p>'
     );
+
 });

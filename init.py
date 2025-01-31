@@ -1,4 +1,6 @@
 from flask import Flask
+from flask_socketio import SocketIO
+
 
 def create_app():
     app = Flask(__name__)
@@ -6,3 +8,6 @@ def create_app():
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     return app
+
+# Для WebSocket подключаем SocketIO
+socketio = SocketIO()
