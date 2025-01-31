@@ -16,7 +16,11 @@ def dashboard():
     # Получаем все чаты, включая друзей
     chats = friends
 
-    return render_template('dashboard.html', user=current_user, chats=chats)
+    # Получаем все группы, к которым принадлежит пользователь
+    groups = current_user.groups.all()
+
+    return render_template('dashboard.html', user=current_user, chats=chats, groups=groups)
+
 
 @dashboard_bp.route('/')
 @dashboard_bp.route('/index')

@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, request, jsonify
 from flask_socketio import emit
-from models import db, User, Message, Friendship
+from models import db, User, Message, Friendship, Group
 from flask_login import current_user
 from init import socketio
 
@@ -56,80 +56,105 @@ def handle_get_chat_history(friend_id):
 # Обработчик WebSocket для получения истории чата
 @socketio.on('get_chat_history')
 def handle_get_chat_history(data):
-    if 'chat_id' not in data:
+    if 'chat_id' not in data or 'chat_type' not in data:
         return
-    friend_id = data['chat_id']
+    
+    chat_id = data['chat_id']
+    chat_type = data['chat_type']  # personal или group
 
     # Проверяем, авторизован ли пользователь
     if not current_user.is_authenticated:
         emit('chat_history', {"error": "Пользователь не авторизован"})
         return
 
-    # Проверяем, являются ли два пользователя друзьями
-    friend = User.query.get(friend_id)
-    
-    if not friend or not is_friend_with(current_user, friend):
-        emit('chat_history', {"error": "Нет доступа к чату с этим пользователем"})
-        return
+    # Если это личный чат
+    if chat_type == 'personal':
+        friend = User.query.get(chat_id)
+        if not friend or not is_friend_with(current_user, friend):
+            emit('chat_history', {"error": "Нет доступа к чату с этим пользователем"})
+            return
 
-    # Получаем все сообщения между текущим пользователем и выбранным другом
-    messages = Message.query.filter(
-        ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
-        ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
-    ).order_by(Message.timestamp.asc()).all()
+        messages = Message.query.filter(
+            ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
+            ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
+        ).order_by(Message.timestamp.asc()).all()
 
-    # Форматируем сообщения для отправки на клиент
+    # Если это групповой чат
+    elif chat_type == 'group':
+        group = Group.query.get(chat_id)
+        if not group or current_user not in group.members:
+            emit('chat_history', {"error": "Нет доступа к этой группе"})
+            return
+
+        messages = Message.query.filter_by(group_id=group.id).order_by(Message.timestamp.asc()).all()
+
+    # Формируем историю сообщений для ответа
     chat_history = [
         {
-            "sender_username": User.query.get(message.sender_id).username,  # Получаем имя отправителя по sender_id
+            "sender_username": User.query.get(message.sender_id).username,
             "content": message.content,
-            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")  # Преобразуем datetime в строку
+            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
         }
         for message in messages
     ]
     
-    emit('chat_history', chat_history)
+    emit('chat_history', {"messages": chat_history})
 
+@chat_bp.route('/get_groups', methods=['GET'])
+def get_groups():
+    # Получаем все группы, к которым принадлежит текущий пользователь
+    groups = current_user.groups.all()
+    return jsonify([{"id": group.id, "name": group.name} for group in groups])
 
 # Обработчик WebSocket для отправки сообщений
 @socketio.on('send_message')
 def handle_send_message(data):
-    # Получаем receiver_id и message_content из данных
     receiver_id = data.get('receiver_id')
     message_content = data.get('message_content')
+    chat_type = data.get('chat_type')  # Тип чата: 'personal' или 'group'
     
-    # Проверка, авторизован ли пользователь
     if not current_user.is_authenticated:
         emit('new_message', {"error": "Пользователь не авторизован"})
         return
     
-    # Проверка на наличие receiver_id и message_content
     if not receiver_id or not message_content:
         emit('new_message', {"error": "Не указаны получатель или сообщение"})
         return
 
-    # Получаем получателя сообщения
-    receiver = User.query.get(receiver_id)
-    if not receiver:
-        emit('new_message', {"error": "Получатель не найден"})
-        return
+    # Логика для личных чатов
+    if chat_type == 'personal':
+        receiver = User.query.get(receiver_id)
+        if not receiver or not is_friend_with(current_user, receiver):
+            emit('new_message', {"error": "Вы не можете отправить сообщение этому пользователю"})
+            return
+        
+        new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
+        db.session.add(new_message)
+        db.session.commit()
+        
+        emit('new_message', {
+            "sender_username": current_user.username,
+            "content": message_content,
+            "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        })
 
-    # Проверяем, что текущий пользователь является другом получателя
-    if not is_friend_with(current_user, receiver):
-        emit('new_message', {"error": "Вы не можете отправить сообщение этому пользователю"})
-        return
+    # Логика для групповых чатов
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if not group or current_user not in group.members:
+            emit('new_message', {"error": "Вы не можете отправить сообщение в эту группу"})
+            return
+        
+        new_message = Message(content=message_content, sender_id=current_user.id, group_id=group.id)
+        db.session.add(new_message)
+        db.session.commit()
 
-    # Сохраняем новое сообщение в базе данных
-    new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
-    db.session.add(new_message)
-    db.session.commit()
-    
-    # Отправляем новое сообщение всем участникам чата
-    emit('new_message', {
-        "sender_username": current_user.username,
-        "content": message_content,
-        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    })
+        emit('new_message', {
+            "sender_username": current_user.username,
+            "content": message_content,
+            "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+        })
+
 
 
 # Добавляем метод к классу User

@@ -1,32 +1,42 @@
 // Устанавливаем соединение с WebSocket
 const socket = io.connect(window.location.origin);
 
-// Обработчик клика на чат
+
+// Обработчик клика на чат (групповой или личный)
 $(document).on('click', '.nav-link', function() {
-    // Получаем ID чата (друга)
     const chatId = $(this).data('chat-id');
-    
+    const chatType = $(this).data('chat-type');  // Получаем тип чата (personal или group)
+
     // Отправляем запрос на сервер для получения истории чата
-    socket.emit('get_chat_history', { chat_id: chatId });
-    
+    socket.emit('get_chat_history', { chat_id: chatId, chat_type: chatType });
     // Очищаем окно сообщений
     $('#messages').empty();
 });
 
-$('#chat-list').on('click', '.nav-link', function() {
-    // Убираем класс active с других чатов
-    $('#chat-list .nav-link').removeClass('active');
-    
-    // Добавляем класс active к текущему чату
-    $(this).addClass('active');
+// Обработчик получения истории чата (группового или личного)
+socket.on('chat_history', function(data) {
+    const messages = data.messages;
+
+    if (data.error) {
+        $('#messages').html('<p class="error-message">' + data.error + '</p>');
+        return;
+    }
+
+    // Заполняем окно сообщениями из истории
+    messages.forEach(function(message) {
+        $('#messages').append(
+            '<p><strong>' + message.sender_username + ':</strong> ' + message.content + '</p>'
+        );
+    });
 });
 
 
-// Обработчик получения истории чата
-socket.on('chat_history', function(messages) {
-    // Если есть ошибки, выводим их
-    if (messages.error) {
-        $('#messages').html('<p class="error-message">' + messages.error + '</p>');
+// Обработчик получения истории чата (группового или личного)
+socket.on('chat_history', function(data) {
+    const messages = data.messages;
+
+    if (data.error) {
+        $('#messages').html('<p class="error-message">' + data.error + '</p>');
         return;
     }
 
@@ -42,27 +52,27 @@ socket.on('chat_history', function(messages) {
 });
 
 // Обработчик отправки сообщений
-$('#send-button').on('click', function() {
+$('#send-button').click(function() {
     const messageContent = $('#message-input').val();
+    
+    // Получаем id чата или группы
+    const chatId = $('#chat-list .nav-link.active').data('chat-id');
+    const chatType = $('#chat-list .nav-link.active').data('chat-type'); // personal или group
 
-    // Получаем текущего собеседника через контекст this (элемент, на который был клик)
-    const receiverId = $('#chat-list .nav-link.active').data('chat-id'); 
+    if (messageContent) {
+        // Отправляем сообщение через WebSocket
+        socket.emit('send_message', {
+            receiver_id: chatId,
+            message_content: messageContent,
+            chat_type: chatType
+        });
 
-    // Проверяем, есть ли receiverId
-    if (!receiverId) {
-        alert("Выберите собеседника для отправки сообщения.");
-        return;
+        // Очищаем поле ввода
+        $('#message-input').val('');
     }
-
-    // Отправляем сообщение через WebSocket
-    socket.emit('send_message', {
-        receiver_id: receiverId,
-        message_content: messageContent
-    });
-
-    // Очищаем поле ввода
-    $('#message-input').val('');
 });
+
+
 
 
 
@@ -72,5 +82,5 @@ socket.on('new_message', function(message) {
     $('#messages').append(
         '<p><strong>' + message.sender_username + ':</strong> ' + message.content + '</p>'
     );
-
 });
+
