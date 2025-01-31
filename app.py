@@ -7,6 +7,7 @@ from blueprints.auth import auth_bp
 from blueprints.dashboard import dashboard_bp
 from blueprints.friend_request import friend_requests_bp
 from blueprints.chat import chat_bp
+from blueprints.group import group_bp
 from flask_migrate import Migrate
 
 # Создаем экземпляр приложения
@@ -32,6 +33,7 @@ app.register_blueprint(auth_bp)
 app.register_blueprint(dashboard_bp)
 app.register_blueprint(friend_requests_bp)
 app.register_blueprint(chat_bp)
+app.register_blueprint(group_bp)
 
 # Основной запуск приложения
 if __name__ == '__main__':

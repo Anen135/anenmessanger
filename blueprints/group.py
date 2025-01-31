@@ -1,119 +1,119 @@
-from flask import Blueprint, render_template, request, jsonify
-from flask_socketio import SocketIO, emit
-from models import db, User, Message, Group, GroupMembership
+from flask import Blueprint, render_template, redirect, url_for, request, jsonify
 from flask_login import current_user, login_required
+from models import db, Group, GroupMembership, User
+from flask_socketio import emit
+from init import socketio
 
 # Создаем Blueprint для групп
 group_bp = Blueprint('group', __name__)
 
-# Для WebSocket подключаем SocketIO
-socketio = SocketIO()
+# API для создания группы
 
-# Маршрут для создания группы
-@group_bp.route('/create_group', methods=['POST'])
+@group_bp.route('/get_groups', methods=['GET'])
+def get_groups():
+    # Получаем все группы, к которым принадлежит текущий пользователь
+    groups = current_user.groups.all()
+    return jsonify([{"id": group.id, "name": group.name} for group in groups])
+
+@group_bp.route('/get_users_for_group', methods=['GET'])
 @login_required
-def create_group():
-    data = request.get_json()
-    group_name = data.get('group_name')
-
-    if not group_name:
-        return jsonify({'success': False, 'message': 'Название группы не указано'})
-
-    # Проверка на существование группы с таким именем
-    existing_group = Group.query.filter_by(name=group_name).first()
-    if existing_group:
-        return jsonify({'success': False, 'message': 'Группа с таким названием уже существует'})
-
-    # Создаем новую группу
-    new_group = Group(name=group_name, creator_id=current_user.id)
-    db.session.add(new_group)
-    db.session.commit()
-
-    # Добавляем создателя в группу как участника
-    membership = GroupMembership(group_id=new_group.id, user_id=current_user.id)
-    db.session.add(membership)
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': 'Группа успешно создана!', 'group_id': new_group.id})
-
-# Обработчик WebSocket для добавления пользователей в группу
-@socketio.on('add_to_group')
-def handle_add_to_group(data):
-    group_id = data.get('group_id')
-    user_id = data.get('user_id')
-
+def get_users_for_group():
+    group_id = request.args.get('group_id')
     group = Group.query.get(group_id)
-    user = User.query.get(user_id)
 
-    if not group or not user:
-        emit('add_to_group_error', {"error": "Группа или пользователь не найдены"})
-        return
+    if not group or group.creator_id != current_user.id: return jsonify({'success': False, 'message': 'Вы не являетесь создателем этой группы'})
+
+    # Получаем всех пользователей, которые не являются участниками этой группы
+    try: users_to_add = User.query.filter(User.id != current_user.id).all()
+    except Exception as e: return jsonify({'success': False, 'message': f'Произошла ошибка при получении списка пользователей! {e}'})
+    
+    return jsonify({ 'success': True, 'users': [{'id': user.id, 'username': user.username} for user in users_to_add] })
+
+@group_bp.route('/add_users_to_group', methods=['POST'])
+@login_required
+def add_users_to_group():
+    group_id = request.form.get('group_id')
+    user_ids = request.form.getlist('users[]')  # Список пользователей, которых нужно добавить
+
+    # Получаем группу по ID
+    group = Group.query.get(group_id)
+
+    if not group:
+        return jsonify({"success": False, "message": "Группа не найдена"})
 
     # Проверяем, является ли текущий пользователь создателем группы
     if group.creator_id != current_user.id:
-        emit('add_to_group_error', {"error": "Вы не являетесь создателем группы"})
+        return jsonify({"success": False, "message": "Только создатель группы может добавлять участников"})
+
+    # Проверяем каждого пользователя, которого мы добавляем в группу
+    added_users = []
+    for user_id in user_ids:
+        user = User.query.get(user_id)
+        if user and user_id != current_user.id:  # Не добавляем самого себя
+            # Проверяем, не является ли пользователь уже участником группы
+            existing_membership = GroupMembership.query.filter_by(group_id=group.id, user_id=user.id).first()
+            if not existing_membership:
+                # Добавляем пользователя в группу
+                new_membership = GroupMembership(group_id=group.id, user_id=user.id)
+                db.session.add(new_membership)
+                added_users.append(user.username)
+
+    try:
+        db.session.commit()
+        return jsonify({
+            "success": True,
+            "message": "Пользователи успешно добавлены в группу",
+            "added_users": added_users
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "success": False,
+            "message": f"Ошибка при добавлении пользователей: {str(e)}"
+        })
+
+@socketio.on('create_group')
+@login_required
+def handle_create_group(data):
+    group_name = data.get('name')
+
+    # Проверка: авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('create_group_response', {"error": "User is not authenticated"})
         return
 
-    # Добавляем пользователя в группу
-    membership = GroupMembership(group_id=group.id, user_id=user.id)
-    db.session.add(membership)
-    db.session.commit()
-
-    emit('user_added_to_group', {"group_id": group.id, "user_id": user.id, "username": user.username})
-
-# Обработчик WebSocket для отправки сообщений в группу
-@socketio.on('send_group_message')
-def handle_send_group_message(data):
-    group_id = data.get('group_id')
-    message_content = data.get('message_content')
-
-    group = Group.query.get(group_id)
-    if not group:
-        emit('send_group_message_error', {"error": "Группа не найдена"})
+    # Проверка: указано ли имя группы
+    if not group_name or not group_name.strip():
+        emit('create_group_response', {"error": "Group name is required and cannot be empty"})
         return
 
-    # Проверяем, состоит ли пользователь в группе
-    if not any(member.id == current_user.id for member in group.members):
-        emit('send_group_message_error', {"error": "Вы не состоите в этой группе"})
+    # Проверка на дублирование (если требуется уникальность имен групп)
+    if Group.query.filter_by(name=group_name.strip()).first():
+        emit('create_group_response', {"error": "A group with this name already exists"})
         return
 
-    # Сохраняем сообщение в базе данных
-    new_message = Message(content=message_content, sender_id=current_user.id, group_id=group.id)
-    db.session.add(new_message)
-    db.session.commit()
+    try:
+        # Создаем группу и добавляем создателя как участника
+        new_group = Group(name=group_name.strip(), creator_id=current_user.id)
+        db.session.add(new_group)
+        db.session.commit()
 
-    emit('new_group_message', {
-        "group_id": group.id,
-        "sender_username": current_user.username,
-        "content": message_content,
-        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-    }, room=f"group_{group.id}")
+        membership = GroupMembership(group_id=new_group.id, user_id=current_user.id)
+        db.session.add(membership)
+        db.session.commit()
 
-# Обработчик WebSocket для получения истории сообщений группы
-@socketio.on('get_group_chat_history')
-def handle_get_group_chat_history(data):
-    group_id = data.get('group_id')
+        # Отправляем успешный ответ
+        emit('create_group_response', {
+            "success": True,
+            "message": "Группа успешно создана!",
+            "group": {
+                "id": new_group.id,
+                "name": new_group.name,
+                "creator_id": new_group.creator_id,
+                "created_at": new_group.created_at.isoformat()
+            }
+        })
 
-    group = Group.query.get(group_id)
-    if not group:
-        emit('group_chat_history_error', {"error": "Группа не найдена"})
-        return
-
-    # Проверяем, состоит ли пользователь в группе
-    if not any(member.id == current_user.id for member in group.members):
-        emit('group_chat_history_error', {"error": "Вы не состоите в этой группе"})
-        return
-
-    # Получаем сообщения группы
-    messages = Message.query.filter_by(group_id=group.id).order_by(Message.timestamp.asc()).all()
-    chat_history = [
-        {
-            "sender_username": message.sender.username,
-            "content": message.content,
-            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        }
-        for message in messages
-    ]
-
-    emit('group_chat_history', {"group_id": group.id, "messages": chat_history})
-
+    except Exception as e:
+        db.session.rollback()
+        emit('create_group_response', {"error": "An error occurred while creating the group", "details": str(e)})

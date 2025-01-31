@@ -52,7 +52,6 @@ def handle_get_chat_history(friend_id):
     # Возвращаем историю чата в формате JSON
     return jsonify({"chat_history": chat_history})
 
-
 # Обработчик WebSocket для получения истории чата
 @socketio.on('get_chat_history')
 def handle_get_chat_history(data):
@@ -100,62 +99,52 @@ def handle_get_chat_history(data):
     
     emit('chat_history', {"messages": chat_history})
 
-@chat_bp.route('/get_groups', methods=['GET'])
-def get_groups():
-    # Получаем все группы, к которым принадлежит текущий пользователь
-    groups = current_user.groups.all()
-    return jsonify([{"id": group.id, "name": group.name} for group in groups])
+# Обработчик WebSocket для отправки сообщений
+def handle_message_creation(receiver_id, message_content, chat_type):
+    if chat_type == 'personal':
+        receiver = User.query.get(receiver_id)
+        if not receiver or not is_friend_with(current_user, receiver):
+            return False, "Вы не можете отправить сообщение этому пользователю"
+
+        new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if not group or current_user not in group.members:
+            return False, "Вы не можете отправить сообщение в эту группу"
+
+        new_message = Message(content=message_content, sender_id=current_user.id, group_id=group.id)
+    else:
+        return False, "Неверный тип чата"
+
+    db.session.add(new_message)
+    db.session.commit()
+
+    emit('new_message', {
+        "sender_username": current_user.username,
+        "content": message_content,
+        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    })
+    return True, None
 
 # Обработчик WebSocket для отправки сообщений
 @socketio.on('send_message')
 def handle_send_message(data):
-    receiver_id = data.get('receiver_id')
-    message_content = data.get('message_content')
-    chat_type = data.get('chat_type')  # Тип чата: 'personal' или 'group'
-    
     if not current_user.is_authenticated:
         emit('new_message', {"error": "Пользователь не авторизован"})
         return
-    
+
+    receiver_id = data.get('receiver_id')
+    message_content = data.get('message_content')
+    chat_type = data.get('chat_type')  # Тип чата: 'personal' или 'group'
+
     if not receiver_id or not message_content:
         emit('new_message', {"error": "Не указаны получатель или сообщение"})
         return
 
-    # Логика для личных чатов
-    if chat_type == 'personal':
-        receiver = User.query.get(receiver_id)
-        if not receiver or not is_friend_with(current_user, receiver):
-            emit('new_message', {"error": "Вы не можете отправить сообщение этому пользователю"})
-            return
-        
-        new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
-        db.session.add(new_message)
-        db.session.commit()
-        
-        emit('new_message', {
-            "sender_username": current_user.username,
-            "content": message_content,
-            "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        })
+    success, error_message = handle_message_creation(receiver_id, message_content, chat_type)
 
-    # Логика для групповых чатов
-    elif chat_type == 'group':
-        group = Group.query.get(receiver_id)
-        if not group or current_user not in group.members:
-            emit('new_message', {"error": "Вы не можете отправить сообщение в эту группу"})
-            return
-        
-        new_message = Message(content=message_content, sender_id=current_user.id, group_id=group.id)
-        db.session.add(new_message)
-        db.session.commit()
-
-        emit('new_message', {
-            "sender_username": current_user.username,
-            "content": message_content,
-            "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
-        })
-
-
+    if not success:
+        emit('new_message', {"error": error_message})
 
 # Добавляем метод к классу User
 def is_friend_with(user, friend):
