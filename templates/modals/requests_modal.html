@@ -2,13 +2,17 @@
     <div class="modal-dialog" role="document">
         <div class="modal-content">
             <div class="modal-header">
-                <h5 class="modal-title" id="requestsModalLabel">Запросы в друзья</h5>
+                <h5 class="modal-title" id="requestsModalLabel">Запросы</h5>
                 <button type="button" class="close" data-dismiss="modal" aria-label="Close">
                     <span aria-hidden="true">×</span>
                 </button>
             </div>
             <div class="modal-body">
-                <ul id="friend-requests-list">
+                <div>
+                    <button id="friend-requests-tab" class="btn btn-custom">Запросы на дружбу</button>
+                    <button id="group-requests-tab" class="btn btn-custom">Запросы на присоединение</button>
+                </div>
+                <ul id="requests-list">
                     <!-- Список запросов будет загружен здесь через AJAX -->
                 </ul>
             </div>

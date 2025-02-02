@@ -27,3 +27,7 @@ def dashboard():
 def index():
     return render_template('index.html')
 
+@dashboard_bp.route('/profile')
+@login_required
+def profile():
+    return render_template('profile.html', user=current_user)

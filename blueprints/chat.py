@@ -43,6 +43,7 @@ def handle_get_chat_history(friend_id):
     chat_history = [
         {
             "sender": message.sender.username,
+            "avatar": message.sender.avatar_url,
             "content": message.content,
             "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")  # Преобразуем datetime в строку
         }
@@ -91,6 +92,7 @@ def handle_get_chat_history(data):
     chat_history = [
         {
             "sender_username": User.query.get(message.sender_id).username,
+            "sender_avatar": User.query.get(message.sender_id).avatar_url,
             "content": message.content,
             "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
         }
@@ -121,6 +123,7 @@ def handle_message_creation(receiver_id, message_content, chat_type):
 
     emit('new_message', {
         "sender_username": current_user.username,
+        "sender_avatar": User.query.get(new_message.sender_id).avatar_url,
         "content": message_content,
         "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
     })

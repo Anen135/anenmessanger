@@ -1,5 +1,3 @@
-from flask import Flask
-from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager
 from init import create_app, socketio
 from models import db, User
@@ -8,6 +6,8 @@ from blueprints.dashboard import dashboard_bp
 from blueprints.friend_request import friend_requests_bp
 from blueprints.chat import chat_bp
 from blueprints.group import group_bp
+from blueprints.group_request import group_requests_bp
+from blueprints.profile import upload_bp
 from flask_migrate import Migrate
 
 # Создаем экземпляр приложения
@@ -34,6 +34,8 @@ app.register_blueprint(dashboard_bp)
 app.register_blueprint(friend_requests_bp)
 app.register_blueprint(chat_bp)
 app.register_blueprint(group_bp)
+app.register_blueprint(group_requests_bp)
+app.register_blueprint(upload_bp)
 
 # Основной запуск приложения
 if __name__ == '__main__':

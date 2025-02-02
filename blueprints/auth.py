@@ -11,11 +11,15 @@ def register():
     if request.method == 'POST':
         username = request.form['username']
         password = request.form['password']
+        email = request.form['email']
         if User.query.filter_by(username=username).first():
             flash('Пользователь с таким именем уже существует!', 'error')
             return redirect(url_for('auth.register'))
+        if User.query.filter_by(email=email).first():
+            flash('Пользователь с таким email уже существует!', 'error')
+            return redirect(url_for('auth.register'))
         hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
-        new_user = User(username=username, password=hashed_password)
+        new_user = User(username=username, password=hashed_password, email=email)
         db.session.add(new_user)
         db.session.commit()
         flash('Регистрация прошла успешно!', 'success')

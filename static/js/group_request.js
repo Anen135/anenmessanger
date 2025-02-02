@@ -1,5 +1,5 @@
 // Обработчик клика по кнопке "+" для добавления пользователей в группу
-$(document).on('click', '.add-user-btn', function() {
+$(document).on('click', '.add-user-btn', function () {
     const groupId = $(this).data('group-id');
 
     // Устанавливаем groupId в модальное окно
@@ -13,7 +13,7 @@ $(document).on('click', '.add-user-btn', function() {
         url: '/get_users_for_group',
         method: 'GET',
         data: { group_id: groupId },
-        success: function(response) {
+        success: function (response) {
             if (response.success) {
                 // Заполняем список пользователей, которых можно добавить в группу
                 const usersList = $('#users-list');
@@ -32,33 +32,40 @@ $(document).on('click', '.add-user-btn', function() {
     });
 });
 
-
 // Обработчик кнопки "Добавить" пользователей в группу
-$('#add-users-button').click(function() {
-    const groupId = $('#add-user-modal').data('group-id');  // Получаем groupId
-    const selectedUsers = [];
-    
-    // Получаем всех выбранных пользователей
-    $('input[name="user"]:checked').each(function() {
-        selectedUsers.push($(this).val());
-    });
-    console.log(selectedUsers);
+// Отправка запросов на присоединение к группе для выбранных пользователей
+$('#add-users-button').click(function () {
+    const groupId = $('#add-user-modal').data('group-id');
 
-    // Отправляем выбранных пользователей на сервер
-    $.ajax({
-        url: '/add_users_to_group',
-        method: 'POST',
-        data: {
-            group_id: groupId,
-            users: selectedUsers
-        },
-        success: function(response) {
-            if (response.success) {
-                alert('Пользователи успешно добавлены!');
-                $('#add-user-modal').modal('hide');
-            } else {
-                alert(`Ошибка при добавлении пользователей:\n ${response.message}`);
-            }
-        }
+    // Собираем ID выбранных пользователей
+    const selectedUserIds = [];
+    $('#users-list input[name="user"]:checked').each(function () {
+        selectedUserIds.push($(this).val());
     });
+
+    if (selectedUserIds.length === 0) {
+        alert('Выберите хотя бы одного пользователя!');
+        return;
+    }
+
+    // Отправляем запрос для каждого выбранного пользователя
+    selectedUserIds.forEach(userId => {
+        $.ajax({
+            url: '/send_group_join_request',
+            method: 'POST',
+            data: { group_id: groupId, user_id: userId },
+            success: function (response) {
+                if (!response.success) {
+                    alert(`Ошибка при отправке запроса пользователю ${userId}: ${response.message}`);
+                    console.log(`Error sending join request to user ${userId}: ${response.message}`);
+                }
+            },
+            error: function () {
+                alert(`Ошибка при отправке запроса пользователю ${userId}`);
+            }
+        });
+    });
+
+    alert('Запросы на присоединение отправлены!');
+    $('#add-user-modal').modal('hide');
 });

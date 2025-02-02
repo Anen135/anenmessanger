@@ -70,7 +70,9 @@
         </div>
         <form method="POST">
             <input type="text" name="username" placeholder="Имя пользователя" required>
+            <input type="email" name="email" placeholder="Электронная почта" required>
             <input type="password" name="password" placeholder="Пароль" required>
+            <input type="password" name="confirm_password" placeholder="Повторите пароль" required>
             <button type="submit">Зарегистрироваться</button>
         </form>
         <p>Уже есть аккаунт? <a href="{{ url_for('auth.login') }}">Войти</a></p>

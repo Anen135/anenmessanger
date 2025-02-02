@@ -17,6 +17,14 @@ class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), nullable=False, unique=True)
     password = db.Column(db.String(150), nullable=False)
+    avatar_url = db.Column(db.String(150), nullable=False, default='uploads/default.png')
+    email = db.Column(db.String(150), nullable=False, unique=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    about = db.Column(db.String(500), nullable=True)
+    email_notification = db.Column(db.Boolean, nullable=False, default=True)
+    popup_notification = db.Column(db.Boolean, nullable=False, default=True)
+    sms_notification = db.Column(db.Boolean, nullable=False, default=True)
+    
 
     # Связь многие ко многим для списка друзей
     friends = db.relationship('User',

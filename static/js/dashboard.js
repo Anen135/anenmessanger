@@ -40,4 +40,126 @@ $(document).ready(function() {
     });
 });
 
-    
+$(document).ready(function() {
+    // Обработчики переключения вкладок
+    $('#friend-requests-tab').click(function() {
+        loadFriendRequests(); // Загружаем запросы на дружбу
+    });
+
+    $('#group-requests-tab').click(function() {
+        loadGroupRequests(); // Загружаем запросы на присоединение к группе
+    });
+
+    // Обработчик кнопки "Запросы"
+    $('#show-requests-button').click(function() {
+        $('#requestsModal').modal('show');
+        loadFriendRequests(); // Загружаем запросы на дружбу по умолчанию при открытии модального окна
+    });
+
+    // Функция для загрузки запросов на дружбу
+    function loadFriendRequests() {
+        $.ajax({
+            url: '/get_friend_requests',  // Эндпоинт для получения запросов на дружбу
+            type: 'GET',
+            success: function(response) {
+                if (response.success) {
+                    $('#requests-list').empty(); // Очистка предыдущих запросов
+                    
+                    // Добавление входящих запросов
+                    response.incoming_requests.forEach(function(request) {
+                        $('#requests-list').append(
+                            `<li>${request.sender_username} 
+                            <button class="btn btn-sm btn-success" onclick="respondFriendRequest(${request.id}, 'accept')">Принять</button>
+                            <button class="btn btn-sm btn-danger" onclick="respondFriendRequest(${request.id}, 'decline')">Отклонить</button></li>`
+                        );
+                    });
+
+                    // Добавление исходящих запросов
+                    response.outgoing_requests.forEach(function(request) {
+                        $('#requests-list').append(
+                            `<li>${request.receiver_username} 
+                            <button class="btn btn-sm btn-danger" onclick="respondFriendRequest(${request.id}, 'cancel')">Отменить</button></li>`
+                        );
+                    });
+                } else {
+                    alert(response.message);
+                }
+            },
+            error: function() {
+                alert('Ошибка при получении запросов на дружбу.');
+            }
+        });
+    }
+
+    // Функция для отклика на запросы на дружбу
+    window.respondFriendRequest = function(requestId, action) {
+        $.ajax({
+            url: `/respond_friend_request/${requestId}/${action}`,
+            type: 'GET',
+            success: function(response) {
+                if (response.success) {
+                    loadFriendRequests(); // Перезагружаем запросы на дружбу
+                } else {
+                    alert(response.message);
+                }
+            },
+            error: function() {
+                alert('Ошибка при обработке запроса на дружбу.');
+            }
+        });
+    };
+
+// Функция для загрузки запросов на присоединение к группе
+function loadGroupRequests() {
+    $.ajax({
+        url: '/get_group_requests',  // Эндпоинт для получения запросов на присоединение (согласуем с сервером)
+        type: 'GET',
+        success: function(response) {
+            if (response.success) {
+                $('#requests-list').empty(); // Очистка предыдущих запросов
+
+                // Добавление входящих запросов на присоединение к группе
+                response.incoming_requests.forEach(function(request) {
+                    $('#requests-list').append(
+                        `<li>${request.group_name} 
+                        <button class="btn btn-sm btn-success" onclick="respondGroupRequest(${request.id}, 'accept')">Принять</button>
+                        <button class="btn btn-sm btn-danger" onclick="respondGroupRequest(${request.id}, 'decline')">Отклонить</button></li>`
+                    );
+                });
+
+                // Добавление исходящих запросов на присоединение к группе
+                response.outgoing_requests.forEach(function(request) {
+                    $('#requests-list').append(
+                        `<li>${request.group_name} 
+                        <button class="btn btn-sm btn-danger" onclick="respondGroupRequest(${request.id}, 'cancel')">Отменить</button></li>`
+                    );
+                });
+            } else {
+                alert(response.message);
+            }
+        },
+        error: function() {
+            alert('Ошибка при получении запросов на присоединение к группе.');
+        }
+    });
+}
+
+// Функция для отклика на запросы на присоединение к группе
+window.respondGroupRequest = function(requestId, action) {
+    $.ajax({
+        url: `/respond_group_request/${requestId}/${action}`, // Используем POST для изменения статуса запроса
+        type: 'POST',  // Изменил на POST, чтобы соответствовать серверному коду
+        success: function(response) {
+            if (response.success) {
+                loadGroupRequests(); // Перезагружаем запросы на присоединение
+            } else {
+                alert(response.message);
+            }
+        },
+        error: function() {
+            alert('Ошибка при обработке запроса на присоединение к группе.');
+        }
+    });
+};
+
+});

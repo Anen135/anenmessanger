@@ -23,8 +23,8 @@ def get_users_for_group():
 
     if not group or group.creator_id != current_user.id: return jsonify({'success': False, 'message': 'Вы не являетесь создателем этой группы'})
 
-    # Получаем всех пользователей, которые не являются участниками этой группы
-    try: users_to_add = User.query.filter(User.id != current_user.id).all()
+    # Получаем всех пользователей, которые не являются участниками этой группы и в друзях текущего пользователя
+    try: users_to_add = User.query.filter(~User.groups.any(Group.id == group_id), ~User.friends.any(User.id == current_user.id)).all()
     except Exception as e: return jsonify({'success': False, 'message': f'Произошла ошибка при получении списка пользователей! {e}'})
     
     return jsonify({ 'success': True, 'users': [{'id': user.id, 'username': user.username} for user in users_to_add] })

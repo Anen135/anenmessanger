@@ -20,7 +20,6 @@ $(document).on('click', '.nav-link', function() {
     $('#messages').empty();
 });
 
-// Обработчик получения истории чата (группового или личного)
 socket.on('chat_history', function(data) {
     const messages = data.messages;
 
@@ -32,10 +31,19 @@ socket.on('chat_history', function(data) {
     // Заполняем окно сообщениями из истории
     messages.forEach(function(message) {
         $('#messages').append(
-            '<p><strong>' + message.sender_username + ':</strong> ' + message.content + '</p>'
+            '<div class="message align-items-center mb-2 d-flex">' +
+                '<div class="mr-4">' +
+                    '<img src="avatars/' + message.sender_avatar + '" alt="Avatar" class="message-avatar me-2">' +
+                '</div>' +
+                '<div>' +
+                    '<strong>' + message.sender_username + ':</strong>' +
+                    '<p class="mb-0">' + message.content + '</p>' +
+                '</div>' +
+            '</div>'
         );
     });
 });
+
 
 // Обработчик отправки сообщений
 $('#send-button').click(function() {
@@ -66,7 +74,15 @@ $('#send-button').click(function() {
 socket.on('new_message', function(message) {
     // Добавляем новое сообщение в окно чата
     $('#messages').append(
-        '<p><strong>' + message.sender_username + ':</strong> ' + message.content + '</p>'
+        '<div class="message align-items-center mb-2 d-flex">' +
+        '<div class="mr-4">' +
+            '<img src="avatars/' + message.sender_avatar + '" alt="Avatar" class="message-avatar me-2">' +
+        '</div>' +
+        '<div>' +
+            '<strong>' + message.sender_username + ':</strong>' +
+            '<p class="mb-0">' + message.content + '</p>' +
+        '</div>' +
+    '</div>'
     );
 });
 

@@ -13,9 +13,9 @@
             <h4 class="my-0">Dashboard</h4>
             <div>
                 <button class="btn btn-custom" id="send-friend-request">Отправить запрос</button>
-                <button class="btn btn-custom" id="show-requests-button">Запросы в друзья</button>
+                <button class="btn btn-custom" id="show-requests-button">Запросы</button>
                 <button class="btn btn-custom" id="create-group-button">Создать группу</button>
-                <a href="#" class="btn btn-custom">Настройки профиля</a>
+                <a href="{{ url_for('dashboard.profile') }}" class="btn btn-custom">Настройки профиля</a>
             </div>
         </div>
         <div class="main">
