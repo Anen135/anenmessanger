@@ -21,6 +21,7 @@ $(document).ready(function() {
         // Очистка поля ввода и скрытие ошибки
         $('#createGroupError').addClass('d-none');
         $('#groupName').val('');
+        location.reload();
     });
 
     // Обработчик ответа от сервера

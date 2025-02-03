@@ -33,7 +33,7 @@ def send_group_join_request():
     # Проверка, что запрос уже существует
     existing_request = GroupJoinRequest.query.filter_by(group_id=group_id, user_id=user_id).first()
     if existing_request:
-        return jsonify({'success': True, 'message': 'Запрос уже отправлен'})
+        return jsonify({'success': False, 'message': 'Запрос уже отправлен'})
 
     # Создаем новый запрос
     new_request = GroupJoinRequest(group_id=group_id, user_id=user_id)

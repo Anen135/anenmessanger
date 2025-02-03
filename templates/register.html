@@ -14,7 +14,13 @@
             height: 100vh;
             margin: 0;
         }
+        form {
+            display: flex;
+            flex-direction: column;
+        }
         .form-container {
+            display: flex;
+            flex-direction: column;
             background-color: #fff;
             padding: 20px;
             border-radius: 8px;
@@ -27,7 +33,6 @@
             text-align: center;
         }
         .form-container input {
-            width: 100%;
             padding: 10px;
             margin-bottom: 15px;
             border: 1px solid #ccc;
@@ -45,6 +50,18 @@
         .form-container button:hover {
             background-color: #218838;
         }
+
+        .form-container :disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .form-container footer {
+            align-items: center; 
+            display: flex; 
+            justify-content: center
+        }
+
         .flash-messages {
             margin-bottom: 15px;
         }
@@ -55,6 +72,28 @@
             color: #28a745;
         }
     </style>
+    <script>
+        // Функция для проверки паролей
+        function checkPasswordsMatch() {
+            var password = document.getElementsByName("password")[0].value;
+            var confirmPassword = document.getElementsByName("confirm_password")[0].value;
+            var submitButton = document.querySelector("button[type='submit']");
+
+            if (password !== confirmPassword) {
+                // Если пароли не совпадают, отключаем кнопку отправки и показываем сообщение
+                submitButton.disabled = true;
+            } else {
+                // Если пароли совпадают, разрешаем отправку
+                submitButton.disabled = false;
+            }
+        }
+
+        // Добавляем обработчик на изменение паролей
+        window.onload = function() {
+            document.getElementsByName("password")[0].addEventListener("input", checkPasswordsMatch);
+            document.getElementsByName("confirm_password")[0].addEventListener("input", checkPasswordsMatch);
+        }
+    </script>
 </head>
 <body>
     <div class="form-container">
@@ -73,9 +112,11 @@
             <input type="email" name="email" placeholder="Электронная почта" required>
             <input type="password" name="password" placeholder="Пароль" required>
             <input type="password" name="confirm_password" placeholder="Повторите пароль" required>
-            <button type="submit">Зарегистрироваться</button>
+            <button type="submit" disabled>Зарегистрироваться</button>
         </form>
-        <p>Уже есть аккаунт? <a href="{{ url_for('auth.login') }}">Войти</a></p>
+        <div id="footer">
+            <p>Уже есть аккаунт? <a href="{{ url_for('auth.login') }}">Войти</a></p>
+        </div>
     </div>
 </body>
 </html>

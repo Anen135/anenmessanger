@@ -28,6 +28,7 @@
                         {% for chat in chats %}
                         <li class="nav-item">
                             <a class="nav-link" href="javascript:void(0);" id="chat-{{ chat.id }}" data-chat-id="{{ chat.id }}" data-chat-type="personal">{{ chat.username }}</a>
+                            <button class="btn btn-sm btn-danger delete-chat-btn" data-chat-id="{{ chat.id }}">-</button>
                         </li>
                         {% endfor %}
                         <!-- Группы -->
@@ -39,6 +40,9 @@
                                 <!-- Проверка, является ли текущий пользователь создателем группы -->
                                 {% if group.creator_id == current_user.id %}
                                     <button class="btn btn-sm btn-primary add-user-btn" data-group-id="{{ group.id }}">+</button>
+                                {% endif %}
+                                {% if group.creator_id != current_user.id %}
+                                    <button class="btn btn-sm btn-danger leave-group-btn" data-group-id="{{ group.id }}">-</button>
                                 {% endif %}
                             </li>
                         {% endfor %}
@@ -66,6 +70,7 @@
 
                 <div class="chat-input">
                     <input type="text" id="message-input" placeholder="Напишите сообщение...">
+                    <input type="checkbox" id="code-input" class="form-check-input">
                     <button id="send-button" class="btn btn-custom">Отправить</button>
                 </div>
             </div>
@@ -76,6 +81,7 @@
     {% include 'modals/create_group_modal.html' %}
     {% include 'modals/requests_modal.html' %}
     {% include 'modals/add_user_modal.html' %}
+    {% include 'modals/about_user_modal.html' %}
 
     <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
     <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
@@ -84,5 +90,7 @@
     <script src="{{ url_for('static', filename='js/chat.js') }}"></script> <!-- Подключаем скрипты для работы чата -->
     <script src="{{ url_for('static', filename='js/group_request.js') }}"></script> <!-- Подключаем скрипты для работы с группами -->
     <script src="{{ url_for('static', filename='js/friend_request.js') }}"></script> <!-- Подключаем скрипты для работы с друзьями -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
 </body>
 </html>

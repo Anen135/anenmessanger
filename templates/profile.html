@@ -100,8 +100,8 @@
                     </div>
                     <!-- Поле для описания о себе -->
                     <div class="mb-3">
-                      <label for="bio" class="form-label">О себе</label>
-                      <textarea class="form-control" id="bio" rows="3" placeholder="Расскажите немного о себе" maxlength="500">{{ current_user.bio if current_user.bio else '' }}</textarea>
+                      <label for="about" class="form-label">О себе</label>
+                      <textarea class="form-control" id="about" rows="3" placeholder="Расскажите немного о себе" maxlength="500">{{ current_user.about if current_user.about else '' }}</textarea>
                     </div>
                     <!-- Кнопка сохранения -->
                     <div class="d-grid">
@@ -140,17 +140,17 @@
                   <form>
                     <!-- Настройка email уведомлений -->
                     <div class="form-check form-switch mb-3">
-                      <input class="form-check-input" type="checkbox" id="emailNotifications" checked>
+                      <input class="form-check-input" type="checkbox" id="emailNotifications" disabled>
                       <label class="form-check-label" for="emailNotifications">Email уведомления</label>
                     </div>
                     <!-- Настройка push уведомлений -->
                     <div class="form-check form-switch mb-3">
-                      <input class="form-check-input" type="checkbox" id="pushNotifications">
+                      <input class="form-check-input" type="checkbox" id="pushNotifications" disabled>
                       <label class="form-check-label" for="pushNotifications">Push уведомления</label>
                     </div>
                     <!-- Настройка SMS уведомлений -->
                     <div class="form-check form-switch mb-3">
-                      <input class="form-check-input" type="checkbox" id="smsNotifications" disabled title="comming soon">
+                      <input class="form-check-input" type="checkbox" id="smsNotifications" disabled>
                       <label class="form-check-label" for="smsNotifications">SMS уведомления</label>
                     </div>
                     <!-- Кнопка сохранения -->

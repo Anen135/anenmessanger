@@ -29,6 +29,31 @@ $(document).ready(function() {
         }
     });
 
+    // Удалить из друзей
+    $('#remove-from-friends').click(function() {
+        const friendId = $(this).data('friend-id');
+        if (!friendId) {
+            alert('Неизвестный пользователь.');
+            return;
+        }
+        $.ajax({
+            url: '/remove_from_friends',
+            type: 'POST',
+            data: { 'friend_id': friendId },
+            success: function(response) {
+                if (response.success) {
+                    alert('Пользователь удален из друзей!');
+                    location.reload();
+                } else {
+                    alert(response.message);
+                }
+            },
+            error: function() {
+                alert('Ошибка при удалении из друзей.');
+            }
+        })
+    })
+
     // Получение запросов в друзья через AJAX
     $('#show-requests-button').click(function() {
         $.ajax({
