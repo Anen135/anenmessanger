@@ -1,0 +1,1046 @@
+
+%%=============auth.py========%%
+from flask import Blueprint, render_template, request, redirect, url_for, make_response, flash
+from flask_login import login_user, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db, User
+
+auth_bp = Blueprint('auth', __name__)
+
+# Регистрация
+@auth_bp.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        email = request.form['email']
+        if User.query.filter_by(username=username).first():
+            flash('Пользователь с таким именем уже существует!', 'error')
+            return redirect(url_for('auth.register'))
+        if User.query.filter_by(email=email).first():
+            flash('Пользователь с таким email уже существует!', 'error')
+            return redirect(url_for('auth.register'))
+        hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
+        new_user = User(username=username, password=hashed_password, email=email)
+        db.session.add(new_user)
+        db.session.commit()
+        flash('Регистрация прошла успешно!', 'success')
+
+        # Авторизуем пользователя
+        login_user(new_user)
+        resp = redirect(url_for('dashboard.dashboard'))
+
+        # Устанавливаем cookie с именем пользователя
+        resp.set_cookie('username', new_user.username)
+        return resp
+    return render_template('register.html')
+
+# Логин
+@auth_bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard.dashboard'))  # Если пользователь уже авторизован, перенаправляем его на dashboard
+
+    # Проверка cookie на наличие имени пользователя
+    username = request.cookies.get('username')
+    if username:
+        user = User.query.filter_by(username=username).first()
+        if user:
+            login_user(user)
+            return redirect(url_for('dashboard.dashboard'))  # Если cookie есть, автоматически авторизуем пользователя
+
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password, password):
+            # Входим в систему через Flask-Login
+            login_user(user)
+
+            # Устанавливаем cookie для имени пользователя
+            resp = redirect(url_for('dashboard.dashboard'))
+            resp.set_cookie('username', user.username)  # Устанавливаем cookie с именем пользователя
+
+            return resp
+        else:
+            flash('Неверное имя пользователя или пароль', 'error')
+    return render_template('login.html')
+
+# Логаут
+@auth_bp.route('/logout')
+def logout():
+    # Выход через Flask-Login
+    logout_user()
+
+    # Удаляем cookie
+    resp = redirect(url_for('auth.login'))
+    resp.delete_cookie('username')  # Удаляем cookie при выходе
+
+    return resp
+
+%%=============chat.py========%%
+from flask import Blueprint, render_template, request, jsonify
+from flask_socketio import emit, join_room
+from models import db, User, Message, Friendship, Group
+from flask_login import current_user
+from init import socketio
+from html import escape
+import os
+from werkzeug.utils import secure_filename
+from datetime import datetime
+import uuid
+from flask import current_app
+
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf', 'docx', 'txt', 'mp4', 'zip'}
+
+# Сөйлесу үшін Blueprint 
+chat_bp = Blueprint('chat', __name__)
+@socketio.on('connect')
+def handle_connect():
+    if current_user.is_authenticated:
+        join_room(current_user.id)
+        print(f"User {current_user.username} joined room {current_user.id}")
+    else:
+        print("User not authenticated")
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@chat_bp.route('/upload', methods=['POST'])
+def upload_file():
+    # Определяем папку для загрузки относительно static
+    upload_folder = os.path.join('static', 'uploads')
+    full_upload_path = os.path.join(current_app.root_path, upload_folder)
+    
+    # Создаем папку, если она не существует
+    os.makedirs(full_upload_path, exist_ok=True)
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'File type not allowed'}), 400
+
+    try:
+        # Создаем безопасное имя файла
+        filename = secure_filename(file.filename)
+        
+        # Генерируем уникальное имя файла
+        unique_id = uuid.uuid4().hex[:8]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_filename = f"{timestamp}_{unique_id}_{filename}"
+        
+        # Полный путь для сохранения
+        save_path = os.path.join(full_upload_path, unique_filename)
+        
+        # Сохраняем файл
+        file.save(save_path)
+        
+        # Путь для хранения в БД (относительно static)
+        db_file_path = os.path.join('uploads', unique_filename)
+        
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'file_path': db_file_path,  # 'uploads/filename.ext'
+            'file_type': file.mimetype,
+            'file_size': os.path.getsize(save_path)
+        })
+        
+    except Exception as e:
+        current_app.logger.error(f"File upload error: {str(e)}")
+        return jsonify({
+            'error': 'File upload failed',
+            'message': str(e)
+        }), 500
+
+# Чат бетіне арналған Маршрут
+@chat_bp.route('/chat')
+def chat():
+    return render_template('dashboard.html')  # Чат беті
+
+# Пайдаланушының дос екенін тексеру
+def is_friend_with(user, friend):
+    """Проверка, является ли два пользователя друзьями."""
+    if not user.is_authenticated:
+        return False
+    return friend in user.friends.all()
+
+@chat_bp.route('/get_chat_history/<int:friend_id>', methods=['GET'])
+def handle_get_chat_history(friend_id):
+    # Проверяем, авторизован ли пользователь
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Пользователь не авторизован"}), 401
+    
+    # Получаем друга из базы данных
+    friend = User.query.get(friend_id)
+    
+    # Проверяем, что друг существует и что текущий пользователь является другом
+    if not friend or not is_friend_with(current_user, friend):
+        return jsonify({"error": "Дружбы не существует"}), 403
+
+    # Получаем историю чата между текущим пользователем и другом
+    messages = Message.query.filter(
+        ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
+        ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
+    ).order_by(Message.timestamp.asc()).all()
+
+    # Формируем историю сообщений для ответа
+    chat_history = [
+        {
+            "sender": message.sender.username,
+            "avatar": message.sender.avatar_url,
+            "content": message.content,
+            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")  # Преобразуем datetime в строку
+        }
+        for message in messages
+    ]
+    
+    # Возвращаем историю чата в формате JSON
+    return jsonify({"chat_history": chat_history})
+
+# Обработчик WebSocket для получения истории чата
+@socketio.on('get_chat_history')
+def handle_get_chat_history(data):
+    if 'chat_id' not in data or 'chat_type' not in data:
+        return
+    
+    chat_id = data['chat_id']
+    chat_type = data['chat_type']  # personal или group
+
+    # Проверяем, авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('chat_history', {"error": "Пользователь не авторизован"})
+        return
+
+    # Если это личный чат
+    if chat_type == 'personal':
+        friend = User.query.get(chat_id)
+        if not friend or not is_friend_with(current_user, friend):
+            emit('chat_history', {"error": "Нет доступа к чату с этим пользователем"})
+            return
+
+        messages = Message.query.filter(
+            ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
+            ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
+        ).order_by(Message.timestamp.asc()).all()
+
+    # Если это групповой чат
+    elif chat_type == 'group':
+        group = Group.query.get(chat_id)
+        if not group or current_user not in group.members:
+            emit('chat_history', {"error": "Нет доступа к этой группе"})
+            return
+
+        messages = Message.query.filter_by(group_id=group.id).order_by(Message.timestamp.asc()).all()
+
+    # Формируем историю сообщений для ответа
+    chat_history = []
+    for message in messages:
+        message_data = {
+            "sender_username": message.sender.username,
+            "sender_avatar": message.sender.avatar_url,
+            "sender_about": message.sender.about,
+            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "id": message.id
+        }
+
+        # Добавляем информацию в зависимости от типа сообщения
+        if message.content:
+            # Текстовое сообщение
+            message_data["content"] = message.content
+            message_data["is_file"] = False
+        elif message.file_path:
+            # Файловое сообщение
+            message_data.update({
+                "is_file": True,
+                "file_name": message.file_name,
+                "file_path": message.file_path,
+                "file_type": message.file_type,
+                "file_size": message.file_size
+            })
+
+        chat_history.append(message_data)
+    
+    emit('chat_history', {"messages": chat_history})
+
+@socketio.on('delete_message')
+def handle_delete_message(data):
+    message_id = data['message_id']
+    chat_type = data['chat_type']
+    message = Message.query.get(message_id)
+    if not message or message.sender_id != current_user.id:
+        return False
+    db.session.delete(message)
+    db.session.commit()
+    if chat_type == 'personal':
+        emit('message_deleted', {"message_id": message_id}, room=message.receiver_id)
+        emit('message_deleted', {"message_id": message_id}, room=message.sender_id)
+    elif chat_type == 'group':
+        group = Group.query.get(message.group_id)
+        if group:
+            for member in group.members:
+                emit('message_deleted', {"message_id": message_id}, room=member.id)
+    return True
+
+# Обработчик WebSocket для отправки сообщений
+def handle_message_creation(receiver_id, message_content, chat_type):
+    if chat_type == 'personal':
+        receiver = User.query.get(receiver_id)
+        if not receiver or not is_friend_with(current_user, receiver):
+            return False, "Вы не можете отправить сообщение этому пользователю"
+
+        new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if not group or current_user not in group.members:
+            return False, "Вы не можете отправить сообщение в эту группу"
+
+        new_message = Message(content=message_content, sender_id=current_user.id, group_id=group.id)
+    else:
+        return False, "Неверный тип чата"
+
+    db.session.add(new_message)
+    db.session.commit()
+
+    # Подготовка сообщения для отправки всем участникам чата (включая отправителя)
+    message_data = {
+        "chat_id": receiver_id,
+        "chat_type": chat_type,
+        "sender_username": current_user.username,
+        "sender_avatar": current_user.avatar_url,
+        "sender_about": current_user.about,
+        "content": message_content,
+        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    # Если это личный чат, отправляем сообщение обоим участникам (отправителю и получателю)
+    if chat_type == 'personal':
+        emit('new_message', message_data, room=receiver_id)
+        message_data["self_send"] = True
+        emit('new_message', message_data, room=current_user.id)
+
+    # Если это групповой чат, отправляем сообщение всем участникам группы
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if group:
+            for member in group.members:
+                emit('new_message', message_data, room=member.id)
+    return True, None
+
+
+# Обработчик WebSocket для отправки сообщений
+@socketio.on('send_message')
+def handle_send_message(data):
+    if not current_user.is_authenticated:
+        emit('new_message', {"error": "Пользователь не авторизован"})
+        return
+
+    receiver_id = data.get('receiver_id')
+    message_content = data.get('message_content')
+    chat_type = data.get('chat_type')  # Тип чата: 'personal' или 'group'
+    usejs = data.get('usejs')
+    
+    if not usejs:
+        message_content = escape(message_content)
+
+    if not receiver_id or not message_content:
+        emit('new_message', {"error": "Не указаны получатель или сообщение"})
+        return
+
+    success, error_message = handle_message_creation(receiver_id, message_content, chat_type)
+
+    if not success:
+        emit('new_message', {"error": error_message})
+
+# Добавляем новый обработчик для файлов
+def handle_file_message_creation(receiver_id, file_data, chat_type):
+    if chat_type == 'personal':
+        receiver = User.query.get(receiver_id)
+        if not receiver or not is_friend_with(current_user, receiver):
+            return False, "Вы не можете отправить файл этому пользователю"
+
+        new_message = Message(
+            sender_id=current_user.id,
+            receiver_id=receiver.id,
+            file_name=file_data['filename'],
+            file_path=file_data['file_path'],
+            file_type=file_data['file_type'],
+            file_size=file_data['file_size']
+        )
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if not group or current_user not in group.members:
+            return False, "Вы не можете отправить файл в эту группу"
+
+        new_message = Message(
+            sender_id=current_user.id,
+            group_id=group.id,
+            file_name=file_data['filename'],
+            file_path=file_data['file_path'],
+            file_type=file_data['file_type'],
+            file_size=file_data['file_size']
+        )
+    else:
+        return False, "Неверный тип чата"
+
+    db.session.add(new_message)
+    db.session.commit()
+
+    # Подготовка сообщения для отправки
+    message_data = {
+        "chat_id": receiver_id,
+        "chat_type": chat_type,
+        "sender_username": current_user.username,
+        "sender_avatar": current_user.avatar_url,
+        "sender_about": current_user.about,
+        "file_name": file_data['filename'],
+        "file_path": file_data['file_path'],
+        "file_type": file_data['file_type'],
+        "file_size": file_data['file_size'],
+        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        "is_file": True  # Флаг, что это файловое сообщение
+    }
+
+    # Отправка файлового сообщения
+    if chat_type == 'personal':
+        emit('new_message', message_data, room=receiver_id)
+        message_data["self_send"] = True
+        emit('new_message', message_data, room=current_user.id)
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if group:
+            for member in group.members:
+                emit('new_message', message_data, room=member.id)
+    
+    return True, None
+
+
+# Обработчик WebSocket для отправки файлов
+@socketio.on('send_file')
+def handle_send_file(data):
+    if not current_user.is_authenticated:
+        emit('new_message', {"error": "Пользователь не авторизован"})
+        return
+
+    receiver_id = data.get('receiver_id')
+    file_data = data.get('file_data')
+    chat_type = data.get('chat_type')
+
+    if not receiver_id or not file_data:
+        emit('new_message', {"error": "Не указаны получатель или файл"})
+        return
+
+    success, error_message = handle_file_message_creation(receiver_id, file_data, chat_type)
+
+    if not success:
+        emit('new_message', {"error": error_message})
+
+@socketio.on('remove_friend')
+def handle_remove_friend(data):
+    friend_id = data.get('friend_id')
+    if not friend_id:
+        emit('remove_friend_response', {"error": "Friend ID is required"})
+        return
+
+    friend = User.query.get(friend_id)
+    if not friend:
+        emit('remove_friend_response', {"error": "Friend not found"})
+        return
+
+    if not is_friend_with(current_user, friend):
+        emit('remove_friend_response', {"error": "You are not friends with this user"})
+        return
+
+    # Удаляем все возможные записи о дружбе в обоих направлениях
+    friendships = Friendship.query.filter(
+        ((Friendship.user1_id == current_user.id) & (Friendship.user2_id == friend_id)) |
+        ((Friendship.user1_id == friend_id) & (Friendship.user2_id == current_user.id))
+    ).all()
+
+    if not friendships:
+        emit('remove_friend_response', {"error": "Friendship not found"})
+        return
+
+    try:
+        # Удаляем записи о дружбе
+        for friendship in friendships:
+            db.session.delete(friendship)
+
+        db.session.commit()  # Явное завершение транзакции
+        emit('remove_friend_response', {"success": True})
+
+    except Exception as e:
+        db.session.rollback()  # Откатываем изменения в случае ошибки
+        emit('remove_friend_response', {"error": f"Error removing friend: {str(e)}"})
+
+# Добавляем метод к классу User
+def is_friend_with(user, friend):
+    """Проверка, является ли два пользователя друзьями."""
+    if not user.is_authenticated:
+        return False
+    return friend in user.friends.all()
+
+User.is_friend_with = is_friend_with
+
+%%=============dashboard.py========%%
+from flask import Blueprint, render_template
+from flask_login import current_user, login_required
+
+dashboard_bp = Blueprint('dashboard', __name__)
+
+# Убедимся, что только авторизованный пользователь может получить доступ к данному маршруту
+@dashboard_bp.route('/dashboard')
+@login_required
+def dashboard():
+    friends = current_user.friends.all() # Получаем всех друзей пользователя
+    chats = friends # Получаем все чаты, включая друзей
+    groups = current_user.groups.all() # Получаем все группы, к которым принадлежит пользователь
+
+    return render_template('dashboard.html', user=current_user, chats=chats, groups=groups)
+
+
+@dashboard_bp.route('/')
+@dashboard_bp.route('/index')
+def index():
+    return render_template('index.html')
+
+@dashboard_bp.route('/profile')
+@login_required
+def profile():
+    return render_template('profile.html', user=current_user)
+%%=============friend_request.py========%%
+from flask import Blueprint, request, jsonify
+from models import db, User, FriendRequest, Friendship
+
+friend_requests_bp = Blueprint('friend_requests', __name__)
+
+# Отправка запроса на дружбу
+@friend_requests_bp.route('/send_friend_request', methods=['POST'])
+def send_friend_request():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    friend_username = request.form['friend_username']
+    friend = User.query.filter_by(username=friend_username).first()
+    
+    if not friend:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Проверка, что пользователь не пытается добавить себя в друзья
+    if user.id == friend.id:
+        return jsonify({'success': False, 'message': 'Нельзя добавить самого себя в друзья'})
+
+    # Проверка, что уже есть друзья
+    if friend in user.friends:
+        return jsonify({'success': False, 'message': 'Вы уже в друзьях с этим пользователем'})
+
+    # Проверка, что запрос уже был отправлен
+    existing_request = FriendRequest.query.filter_by(sender_id=user.id, receiver_id=friend.id).first()
+    if existing_request:
+        return jsonify({'success': False, 'message': 'Запрос уже отправлен'})
+
+    new_request = FriendRequest(sender_id=user.id, receiver_id=friend.id)
+    db.session.add(new_request)
+    db.session.commit()
+
+    return jsonify({'success': True})
+
+# Получение запросов на дружбу
+@friend_requests_bp.route('/get_friend_requests', methods=['GET'])
+def get_friend_requests():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Получаем входящие запросы
+    incoming_requests = FriendRequest.query.filter_by(receiver_id=user.id).all()
+    outgoing_requests = FriendRequest.query.filter_by(sender_id=user.id).all()
+
+    # Формируем список запросов для отображения в интерфейсе
+    incoming_requests_list = [{'id': r.id, 'sender_username': User.query.get(r.sender_id).username} for r in incoming_requests]
+    outgoing_requests_list = [{'id': r.id, 'receiver_username': User.query.get(r.receiver_id).username} for r in outgoing_requests]
+
+    return jsonify({
+        'success': True,
+        'incoming_requests': incoming_requests_list,
+        'outgoing_requests': outgoing_requests_list
+    })
+
+# Ответ на запрос дружбы (принять/отклонить)
+@friend_requests_bp.route('/respond_friend_request/<int:request_id>/<action>', methods=['GET'])
+def respond_friend_request(request_id, action):
+    # Находим запрос по ID
+    friend_request = FriendRequest.query.get(request_id)
+    if not friend_request:
+        return jsonify({'success': False, 'message': 'Запрос не найден!'})
+
+    if action not in ['accept', 'decline']:
+        return jsonify({'success': False, 'message': 'Неверное действие!'})
+
+    if action == 'accept':
+        # Проверка, что пользователи не являются друзьями
+        user1 = friend_request.sender
+        user2 = friend_request.receiver
+
+        if user2 in user1.friends:
+            return jsonify({'success': False, 'message': 'Вы уже в друзьях с этим пользователем'})
+
+        # Добавляем в таблицу Friendship (связь многие ко многим)
+        friendship1 = Friendship(user1_id=user1.id, user2_id=user2.id)
+        friendship2 = Friendship(user1_id=user2.id, user2_id=user1.id)  # Дублируем для обратной связи
+
+        db.session.add(friendship1)
+        db.session.add(friendship2)
+
+        # Удаляем запрос на дружбу
+        db.session.delete(friend_request)
+        db.session.commit()
+
+        return jsonify({'success': True, 'message': 'Запрос на дружбу принят!'})
+
+    elif action == 'decline':
+        # Просто удаляем запрос
+        db.session.delete(friend_request)
+        db.session.commit()
+
+        return jsonify({'success': True, 'message': 'Запрос на дружбу отклонен.'})
+
+%%=============group.py========%%
+from flask import Blueprint, render_template, redirect, url_for, request, jsonify
+from flask_login import current_user, login_required
+from models import db, Group, GroupMembership, User, Friendship, GroupJoinRequest
+from flask_socketio import emit
+from init import socketio
+
+# Создаем Blueprint для групп
+group_bp = Blueprint('group', __name__)
+
+# API для создания группы
+
+@group_bp.route('/get_groups', methods=['GET'])
+def get_groups():
+    # Получаем все группы, к которым принадлежит текущий пользователь
+    groups = current_user.groups.all()
+    return jsonify([{"id": group.id, "name": group.name} for group in groups])
+
+@group_bp.route('/get_users_for_group', methods=['GET'])
+@login_required
+def get_users_for_group():
+    group_id = request.args.get('group_id')
+    group = Group.query.get(group_id)
+
+    if not group or group.creator_id != current_user.id: return jsonify({'success': False, 'message': 'Вы не являетесь создателем этой группы'})
+
+    # Получаем всех пользователей, которые не являются участниками этой группы и в друзях текущего пользователя
+    try: 
+        users_to_add = db.session.query(User).join(Friendship, 
+    (Friendship.user1_id == current_user.id) | (Friendship.user2_id == current_user.id)
+).filter(
+    User.id != current_user.id  # Исключаем самого себя
+).filter(
+    # Пользователь должен быть другом current_user
+    ((Friendship.user1_id == current_user.id) & (User.id == Friendship.user2_id)) |
+    ((Friendship.user2_id == current_user.id) & (User.id == Friendship.user1_id))
+).filter(
+    ~User.groups.any(Group.id == group_id)  # Пользователь не должен быть в группе с group_id
+).all()
+    except Exception as e: return jsonify({'success': False, 'message': f'Произошла ошибка при получении списка пользователей! {e}'})
+    
+    return jsonify({ 'success': True, 'users': [{'id': user.id, 'username': user.username} for user in users_to_add] })
+
+@group_bp.route('/get_users_in_group', methods=['GET'])
+@login_required
+def get_users_in_group():
+    group_id = request.args.get('group_id')
+    group = Group.query.get(group_id)
+    
+    if not group or group.creator_id != current_user.id: return jsonify({'success': False, 'message': 'Вы не являетесь создателем этой группы'})
+
+    # Получаем всех пользователей, которые являются участниками этой группы
+    try:
+        users_in_group = db.session.query(User).join(GroupMembership, GroupMembership.user_id == User.id).filter(GroupMembership.group_id == group_id).all()
+    except Exception as e: return jsonify({'success': False, 'message': f'Произошла ошибка при получении списка пользователей! {e}'})
+
+    return jsonify({ 'success': True, 'users': [{'id': user.id, 'username': user.username} for user in users_in_group] })
+
+# Обработчик для удаления пользователей из группы
+@group_bp.route('/remove_users_from_group', methods=['POST'])
+@login_required
+def remove_users_from_group():
+    data = request.get_json()  # Получаем данные как JSON
+    group_id = data.get('group_id')
+    user_ids = data.get('users')  # Список ID пользователей, которых нужно удалить
+
+    # Проверка: указано ли ID группы
+    if not group_id:
+        return jsonify({"success": False, "error": "Group ID is required"})
+
+    # Получаем группу по ID
+    group = Group.query.get(group_id)
+    
+    if not group:
+        return jsonify({"success": False, "error": "Group not found"})
+
+    # Проверяем, является ли текущий пользователь создателем группы
+    if group.creator_id != current_user.id:
+        return jsonify({"success": False, "error": "Only the creator can remove users"})
+
+    # Удаляем каждого пользователя
+    removed_users = []
+    for user_id in user_ids:
+        membership = GroupMembership.query.filter_by(group_id=group.id, user_id=user_id).first()
+        if membership:
+            db.session.delete(membership)
+            removed_users.append(user_id)
+    try:
+        db.session.commit()
+        msg = f'Пользователи были удалены из группы {group.name}'
+        if current_user.id in user_ids: 
+            handle_delete_group(group)
+            return jsonify({
+                "success": True,
+                "message": "Ваша группа была удалена. Все пользователи были удалены из группы.",
+                "removed_users": removed_users
+            })
+        return jsonify({
+            "success": True,
+            "message": msg,
+            "removed_users": removed_users
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "success": False,
+            "error": "Error removing users",
+            "details": str(e)
+        })
+
+
+@socketio.on('create_group')
+@login_required
+def handle_create_group(data):
+    group_name = data.get('name')
+
+    # Проверка: авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('create_group_response', {"error": "User is not authenticated"})
+        return
+
+    # Проверка: указано ли имя группы
+    if not group_name or not group_name.strip():
+        emit('create_group_response', {"error": "Group name is required and cannot be empty"})
+        return
+
+    try:
+        # Создаем группу и добавляем создателя как участника
+        new_group = Group(name=group_name.strip(), creator_id=current_user.id)
+        db.session.add(new_group)
+        db.session.commit()
+
+        membership = GroupMembership(group_id=new_group.id, user_id=current_user.id)
+        db.session.add(membership)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        emit('create_group_response', {
+            "success": True,
+            "message": "Группа успешно создана!",
+            "group": {
+                "id": new_group.id,
+                "name": new_group.name,
+                "creator_id": new_group.creator_id,
+                "created_at": new_group.created_at.isoformat()
+            }
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        emit('create_group_response', {"error": "An error occurred while creating the group", "details": str(e)})
+        
+@socketio.on('leave_group')
+@login_required
+def handle_leave_group(data):
+    group_id = data.get('group_id')
+
+    # Проверка: авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('leave_group_response', {"error": "User is not authenticated"})
+        return
+
+    # Проверка: указано ли ID группы
+    if not group_id:
+        emit('leave_group_response', {"error": "Group ID is required and cannot be empty"})
+        return
+
+    try:
+        # Ищем группу по ID
+        group = Group.query.get(group_id)
+
+        if not group:
+            emit('leave_group_response', {"error": "Group not found"})
+            return
+
+        # Проверяем, является ли текущий пользователь создателем группы
+        if group.creator_id == current_user.id:
+            emit('leave_group_response', {"error": "You cannot leave your own group"})
+            return
+
+        # Ищем участника группы
+        membership = GroupMembership.query.filter_by(group_id=group.id, user_id=current_user.id).first()
+
+        if not membership:
+            emit('leave_group_response', {"error": "You are not a member of this group"})
+            return
+
+        # Удаляем участника из группы
+        db.session.delete(membership)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        emit('leave_group_response', {"success": True, "message": "Вы успешно покинули группу"})
+    except Exception as e:
+        db.session.rollback()
+        emit('leave_group_response', {"error": "An error occurred while leaving the group", "details": e})
+
+def handle_delete_group(group):
+    try:
+        if not group:
+            return "Group not found"
+
+        # Проверяем, является ли текущий пользователь создателем группы
+        if group.creator_id != current_user.id:
+            return "Only the creator can remove groups"
+
+        # Удаляем группу
+        db.session.delete(group)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        return True
+    except Exception as e:
+        db.session.rollback()
+        return False, e
+%%=============group_request.py========%%
+from flask import Blueprint, request, jsonify
+from models import db, User, Group, GroupJoinRequest, GroupMembership
+
+group_requests_bp = Blueprint('group_requests', __name__)
+
+# Отправка запроса на присоединение к группе
+@group_requests_bp.route('/send_group_join_request', methods=['POST'])
+def send_group_join_request():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    group_id = request.form['group_id']
+    group = Group.query.get(group_id)
+
+    if not group:
+        return jsonify({'success': False, 'message': 'Группа не найдена'})
+
+    # Проверка, что запрос отправляет создатель группы
+    if group.creator_id != user.id:
+        return jsonify({'success': False, 'message': 'Только создатель группы может отправить запрос'})
+
+    user_id = request.form['user_id']
+    target_user = User.query.get(user_id)
+
+    if not target_user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Проверка, что запрос уже существует
+    existing_request = GroupJoinRequest.query.filter_by(group_id=group_id, user_id=user_id).first()
+    if existing_request:
+        return jsonify({'success': False, 'message': 'Запрос уже отправлен'})
+
+    # Создаем новый запрос
+    new_request = GroupJoinRequest(group_id=group_id, user_id=user_id)
+    db.session.add(new_request)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Запрос отправлен'})
+
+# Получение запросов на присоединение (как входящих, так и исходящих)
+@group_requests_bp.route('/get_group_requests', methods=['GET'])
+def get_group_requests():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Входящие запросы (запросы, которые пользователь должен одобрить/отклонить)
+    incoming_requests = GroupJoinRequest.query.filter_by(user_id=user.id, status='pending').all()
+
+    # Исходящие запросы (запросы, которые отправил пользователь)
+    outgoing_requests = GroupJoinRequest.query.join(Group).filter(Group.creator_id == user.id).all()
+
+    return jsonify({
+        'success': True,
+        'incoming_requests': [{'id': r.id, 'group_name': r.group.name, 'group_id': r.group_id} for r in incoming_requests],
+        'outgoing_requests': [{'id': r.id, 'user_name': r.user.username, 'user_id': r.user_id} for r in outgoing_requests]
+    })
+
+# Ответ на запрос (принять/отклонить)
+@group_requests_bp.route('/respond_group_request/<int:request_id>/<action>', methods=['POST'])
+def respond_group_request(request_id, action):
+    group_request = GroupJoinRequest.query.get(request_id)
+    if not group_request:
+        return jsonify({'success': False, 'message': 'Запрос не найден'})
+
+    if action not in ['accept', 'decline']:
+        return jsonify({'success': False, 'message': 'Неверное действие'})
+
+    if action == 'accept':
+        # Добавляем пользователя в группу
+        new_membership = GroupMembership(group_id=group_request.group_id, user_id=group_request.user_id)
+        db.session.add(new_membership)
+
+    # Удаляем запрос
+    db.session.delete(group_request)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': f'Запрос {"принят" if action == "accept" else "отклонен"}'})
+
+%%=============profile.py========%%
+import os
+import uuid
+from flask import Blueprint, request, redirect, url_for, render_template, flash, send_from_directory, current_app, send_file, send_from_directory, jsonify
+from werkzeug.utils import secure_filename
+from flask_login import current_user, login_required
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db  # Импортируем объект БД и модель User, если потребуется
+
+upload_bp = Blueprint('upload', __name__, template_folder='templates')
+
+# Разрешённые расширения файлов
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
+def allowed_file(filename):
+    """Проверка расширения файла."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@upload_bp.route('/profile/avatar/upload', methods=['POST'])
+@login_required
+def upload_file():
+    # Проверяем, присутствует ли в запросе файл с ключом 'avatar'
+    if 'avatar' not in request.files:
+        flash('Файл не найден в запросе!')
+        return redirect(request.url)
+    
+    file = request.files['avatar']
+    
+    # Если пользователь не выбрал файл, браузер отправляет пустое имя файла
+    if file.filename == '':
+        flash('Не выбран файл для загрузки!')
+        return redirect(request.url)
+    
+    if file and allowed_file(file.filename):
+        # Безопасно формируем имя файла и добавляем уникальный префикс
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{filename}"
+        
+        file_path = os.path.join(current_app.config['UPLOAD_FOLDER'], unique_filename)
+        file.save(file_path)
+        
+        # Обновляечм информацию об аватаре для залогиненного пользователя
+        current_user.avatar_url = f"uploads/{unique_filename}"
+        db.session.commit()
+        
+        flash('Файл успешно загружен!')
+        # Перенаправляем, например, на страницу профиля или туда, где отображается аватар
+        return redirect(url_for('upload.uploaded_file', filename=unique_filename))
+    else:
+        flash('Недопустимый формат файла!')
+        return redirect(request.url)
+
+@upload_bp.route('/avatars/uploads/<filename>')
+def uploaded_file(filename):
+    """
+    Отдаёт загруженный файл.
+    """
+    return send_from_directory(current_app.config['UPLOAD_FOLDER'], filename)
+
+# Обновление личных данных
+@upload_bp.route('/profile/update', methods=['POST'])
+@login_required
+def update_profile():
+    data = request.form
+    current_user.username = data.get('fullName', current_user.username)
+    current_user.email = data.get('email', current_user.email)
+    current_user.about = data.get('about', current_user.about)
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Профиль обновлён успешно!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при сохранении данных: {str(e)}'})
+
+# Смена пароля
+@upload_bp.route('/profile/password/update', methods=['POST'])
+@login_required
+def update_password():
+    data = request.form
+    current_password = data.get('currentPassword')
+    new_password = data.get('newPassword')
+
+    # Проверка текущего пароля
+    if not check_password_hash(current_user.password, current_password):
+        return jsonify({'success': False, 'error': 'Неверный текущий пароль!'})
+
+    # Проверка длины нового пароля
+    if len(new_password) < 6:
+        return jsonify({'success': False, 'error': 'Пароль должен содержать не менее 6 символов!'})
+
+    current_user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Пароль успешно обновлён!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при обновлении пароля: {str(e)}'})
+
+# Настройки уведомлений
+@upload_bp.route('/profile/notifications/update', methods=['POST'])
+@login_required
+def update_notifications():
+    data = request.form
+    email_notifications = data.get('emailNotifications') == 'true'
+    push_notifications = data.get('pushNotifications') == 'true'
+
+    current_user.email_notifications = email_notifications
+    current_user.push_notifications = push_notifications
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Настройки уведомлений обновлены!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при сохранении настроек: {str(e)}'})

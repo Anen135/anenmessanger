@@ -24,7 +24,7 @@ def register():
         db.session.commit()
         flash('Регистрация прошла успешно!', 'success')
 
-        # Вход пользователя сразу после регистрации
+        # Авторизуем пользователя
         login_user(new_user)
         resp = redirect(url_for('dashboard.dashboard'))
 

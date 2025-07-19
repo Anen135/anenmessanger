@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Настройка профиля</title>
+    <title>Профильді орнату</title>
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
     <!-- Bootstrap Icons (для иконок) -->
@@ -47,17 +47,17 @@
         <!-- Боковая панель с пунктами настройки -->
         <div class="col-md-3 mb-4">
         <div class="card">
-            <a class="btn btn-primary" id="back-btn" href="{{ url_for('dashboard.dashboard') }}">Назад</a>
+            <a class="btn btn-primary" id="back-btn" href="{{ url_for('dashboard.dashboard') }}">Артқа</a>
         </div>
           <div class="list-group" id="list-tab" role="tablist">
             <a class="list-group-item list-group-item-action active" id="list-personal-list" data-bs-toggle="list" href="#list-personal" role="tab">
-              <i class="bi bi-person"></i> Личные данные
+              <i class="bi bi-person"></i> Жеке деректер
             </a>
             <a class="list-group-item list-group-item-action" id="list-security-list" data-bs-toggle="list" href="#list-security" role="tab">
-              <i class="bi bi-lock"></i> Безопасность
+              <i class="bi bi-lock"></i> Қауіпсіздік
             </a>
             <a class="list-group-item list-group-item-action" id="list-notifications-list" data-bs-toggle="list" href="#list-notifications" role="tab">
-              <i class="bi bi-bell"></i> Уведомления (В разработке)
+              <i class="bi bi-bell"></i> Хабарламалар (әзірлеуде)
             </a>
             <!-- Можно добавить и другие пункты -->
           </div>
@@ -67,7 +67,7 @@
         <div class="col-md-9">
           <div class="card shadow">
             <div class="card-header bg-primary text-white">
-              <h4 class="mb-0" id="content-title">Настройка профиля</h4>
+              <h4 class="mb-0" id="content-title">Профильді орнату</h4>
             </div>
             <div class="card-body">
               <div class="tab-content" id="nav-tabContent">
@@ -88,24 +88,24 @@
                     </div>
                     <!-- Поле для имени -->
                     <div class="mb-3">
-                      <label for="fullName" class="form-label">Имя</label>
+                      <label for="fullName" class="form-label">Аты</label>
                       <input type="text" class="form-control" id="fullName" placeholder="То какое имя будет отображаться в чатах"
                              value="{{ current_user.username }}">
                     </div>
                     <!-- Поле для электронной почты -->
                     <div class="mb-3">
-                      <label for="email" class="form-label">Электронная почта</label>
+                      <label for="email" class="form-label">Электрондық пошта</label>
                       <input type="email" class="form-control" id="email" placeholder="Введите email"
                              value="{{ current_user.email if current_user.email else '' }}">
                     </div>
                     <!-- Поле для описания о себе -->
                     <div class="mb-3">
-                      <label for="about" class="form-label">О себе</label>
+                      <label for="about" class="form-label">Өзі туралы</label>
                       <textarea class="form-control" id="about" rows="3" placeholder="Расскажите немного о себе" maxlength="500">{{ current_user.about if current_user.about else '' }}</textarea>
                     </div>
                     <!-- Кнопка сохранения -->
                     <div class="d-grid">
-                      <button type="submit" class="btn btn-primary">Сохранить изменения</button>
+                      <button type="submit" class="btn btn-primary">Өзгерістерді сақтау</button>
                     </div>
                   </form>
                 </div>
@@ -115,22 +115,22 @@
                   <form>
                     <!-- Поле для ввода текущего пароля -->
                     <div class="mb-3">
-                      <label for="currentPassword" class="form-label">Текущий пароль</label>
+                      <label for="currentPassword" class="form-label">Ағымдағы құпия сөз</label>
                       <input type="password" class="form-control" id="currentPassword" placeholder="Введите текущий пароль">
                     </div>
                     <!-- Поле для нового пароля -->
                     <div class="mb-3">
-                      <label for="newPassword" class="form-label">Новый пароль</label>
+                      <label for="newPassword" class="form-label">Жаңа құпия сөз</label>
                       <input type="password" class="form-control" id="newPassword" placeholder="Введите новый пароль">
                     </div>
                     <!-- Подтверждение нового пароля -->
                     <div class="mb-3">
-                      <label for="confirmPassword" class="form-label">Подтвердите новый пароль</label>
+                      <label for="confirmPassword" class="form-label">Жаңа құпия сөзді растаңыз</label>
                       <input type="password" class="form-control" id="confirmPassword" placeholder="Подтвердите новый пароль">
                     </div>
                     <!-- Кнопка сохранения -->
                     <div class="d-grid">
-                      <button type="submit" class="btn btn-primary">Обновить пароль</button>
+                      <button type="submit" class="btn btn-primary">Құпия сөзді жаңарту</button>
                     </div>
                   </form>
                 </div>
@@ -141,21 +141,21 @@
                     <!-- Настройка email уведомлений -->
                     <div class="form-check form-switch mb-3">
                       <input class="form-check-input" type="checkbox" id="emailNotifications" disabled>
-                      <label class="form-check-label" for="emailNotifications">Email уведомления</label>
+                      <label class="form-check-label" for="emailNotifications">Email хабарлама</label>
                     </div>
                     <!-- Настройка push уведомлений -->
                     <div class="form-check form-switch mb-3">
                       <input class="form-check-input" type="checkbox" id="pushNotifications" disabled>
-                      <label class="form-check-label" for="pushNotifications">Push уведомления</label>
+                      <label class="form-check-label" for="pushNotifications">Push хабарлама</label>
                     </div>
                     <!-- Настройка SMS уведомлений -->
                     <div class="form-check form-switch mb-3">
                       <input class="form-check-input" type="checkbox" id="smsNotifications" disabled>
-                      <label class="form-check-label" for="smsNotifications">SMS уведомления</label>
+                      <label class="form-check-label" for="smsNotifications">SMS хабарлама</label>
                     </div>
                     <!-- Кнопка сохранения -->
                     <div class="d-grid">
-                      <button type="submit" class="btn btn-primary">Сохранить настройки уведомлений</button>
+                      <button type="submit" class="btn btn-primary">Хабарландыру параметрлерін сақтау</button>
                     </div>
                   </form>
                 </div>

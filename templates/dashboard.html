@@ -12,21 +12,21 @@
         <div class="header">
             <h4 class="my-0">Dashboard</h4>
             <div>
-                <button class="btn btn-custom" id="send-friend-request">Отправить запрос</button>
-                <button class="btn btn-custom" id="show-requests-button">Запросы</button>
-                <button class="btn btn-custom" id="create-group-button">Создать группу</button>
-                <a href="{{ url_for('dashboard.profile') }}" class="btn btn-custom">Настройки профиля</a>
+                <button class="btn btn-custom" id="send-friend-request">Сұрау жіберу</button>
+                <button class="btn btn-custom" id="show-requests-button">Сұраулар</button>
+                <button class="btn btn-custom" id="create-group-button">Топ құру</button>
+                <a href="{{ url_for('dashboard.profile') }}" class="btn btn-custom">Профиль параметрлері</a>
             </div>
         </div>
         <div class="main">
             <div class="sidebar">
-                <h5 class="text-center my-4">Мои чаты</h5>
+                <h5 class="text-center my-4">Менің чаттарым</h5>
                 <!-- В разделе "Мои чаты" будут отображаться все чаты -->
                 <div class="chats-section">
                     <ul class="nav flex-column" id="chat-list">
                         <!-- Личные чаты -->
                         {% for chat in chats %}
-                        <li class="nav-item">
+                        <li class="nav-item d-flex justify-content-between align-items-center">
                             <a class="nav-link" href="javascript:void(0);" id="chat-{{ chat.id }}" data-chat-id="{{ chat.id }}" data-chat-type="personal">{{ chat.username }}</a>
                             <button class="btn btn-sm btn-danger delete-chat-btn" data-chat-id="{{ chat.id }}">-</button>
                         </li>
@@ -48,7 +48,7 @@
                         {% endfor %}
                     </ul>
                 </div>
-                <a class="nav-link text-center mt-auto mb-4" href="{{ url_for('auth.logout') }}">Выйти</a>
+                <a class="nav-link text-center mt-auto mb-4" href="{{ url_for('auth.logout') }}">Шығу</a>
             </div>
             <div class="chat-window">
                 <div class="messages" id="messages">
@@ -69,9 +69,24 @@
                 {% endwith %}
 
                 <div class="chat-input">
-                    <input type="text" id="message-input" placeholder="Напишите сообщение...">
-                    <input type="checkbox" id="code-input" class="form-check-input">
-                    <button id="send-button" class="btn btn-custom">Отправить</button>
+                    <input type="text" id="message-input" placeholder="Хабарлама жазыңыз...">
+                    <!-- Добавленная кнопка для выбора файла -->
+                    <button id="send-button" class="btn btn-custom">Жіберу</button>
+                    <div class="d-flex flex-column align-items-center ml-2">
+                        <!-- Кнопка загрузки файла (скрепка) -->
+                        <label for="file-upload" class="btn btn-light p-0 mb-1">
+                            <input type="file" id="file-upload" style="display: none;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-paperclip paperclip-icon" viewBox="0 0 16 16">
+                                <path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0z"/>
+                            </svg>
+                        </label>
+                        
+                        <!-- Чекбокс -->
+                        <label class="custom-checkbox">
+                            <input type="checkbox" id="code-input">
+                            <span class="checkmark"></span>
+                        </label>
+                    </div>
                 </div>
             </div>
         </div>

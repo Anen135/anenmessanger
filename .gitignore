@@ -1,0 +1,10 @@
+__pycache__/
+build/
+dist/
+*.egg-info/
+*.pyc
+*.pyo
+*.pyd
+*.pdb
+migrations/
+*.log

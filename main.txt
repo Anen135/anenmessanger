@@ -1,0 +1,3883 @@
+
+%%=============app.py========%%
+from flask_login import LoginManager
+from init import create_app, socketio
+from models import db, User
+from blueprints.auth import auth_bp
+from blueprints.dashboard import dashboard_bp
+from blueprints.friend_request import friend_requests_bp
+from blueprints.chat import chat_bp
+from blueprints.group import group_bp
+from blueprints.group_request import group_requests_bp
+from blueprints.profile import upload_bp
+from flask_migrate import Migrate
+
+# Қосымшаның данасын жасаңыз
+login_manager = LoginManager()
+app = create_app()
+
+# Flask Инициализациясы
+db.init_app(app)
+login_manager.init_app(app)
+socketio.init_app(app)
+migrate = Migrate(app, db)
+
+# Пайдаланушыны оның идентификаторы бойынша жүктеу
+@login_manager.user_loader
+def load_user(user_id):
+    return User.query.get(int(user_id))
+
+# Егер ол рұқсат етілмеген болса, пайдаланушыны қайта бағыттау үшін маршрутты көрсетіңіз
+login_manager.login_view = 'auth.login'  # Авторизация маршрутына жол
+
+# Регистрация Blueprints
+app.register_blueprint(auth_bp)
+app.register_blueprint(dashboard_bp)
+app.register_blueprint(friend_requests_bp)
+app.register_blueprint(chat_bp)
+app.register_blueprint(group_bp)
+app.register_blueprint(group_requests_bp)
+app.register_blueprint(upload_bp)
+
+# Қолданбаның негізгі іске қосылуы
+if __name__ == '__main__':
+    with app.app_context():
+        db.create_all()
+        # Socketio арқылы WebSocket көмегімен серверді іске қосыңыз
+        socketio.run(app, debug=True)
+    
+%%=============blueprints.txt========%%
+
+%%=============auth.py========%%
+from flask import Blueprint, render_template, request, redirect, url_for, make_response, flash
+from flask_login import login_user, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db, User
+
+auth_bp = Blueprint('auth', __name__)
+
+# Регистрация
+@auth_bp.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        email = request.form['email']
+        if User.query.filter_by(username=username).first():
+            flash('Пользователь с таким именем уже существует!', 'error')
+            return redirect(url_for('auth.register'))
+        if User.query.filter_by(email=email).first():
+            flash('Пользователь с таким email уже существует!', 'error')
+            return redirect(url_for('auth.register'))
+        hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
+        new_user = User(username=username, password=hashed_password, email=email)
+        db.session.add(new_user)
+        db.session.commit()
+        flash('Регистрация прошла успешно!', 'success')
+
+        # Авторизуем пользователя
+        login_user(new_user)
+        resp = redirect(url_for('dashboard.dashboard'))
+
+        # Устанавливаем cookie с именем пользователя
+        resp.set_cookie('username', new_user.username)
+        return resp
+    return render_template('register.html')
+
+# Логин
+@auth_bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard.dashboard'))  # Если пользователь уже авторизован, перенаправляем его на dashboard
+
+    # Проверка cookie на наличие имени пользователя
+    username = request.cookies.get('username')
+    if username:
+        user = User.query.filter_by(username=username).first()
+        if user:
+            login_user(user)
+            return redirect(url_for('dashboard.dashboard'))  # Если cookie есть, автоматически авторизуем пользователя
+
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password, password):
+            # Входим в систему через Flask-Login
+            login_user(user)
+
+            # Устанавливаем cookie для имени пользователя
+            resp = redirect(url_for('dashboard.dashboard'))
+            resp.set_cookie('username', user.username)  # Устанавливаем cookie с именем пользователя
+
+            return resp
+        else:
+            flash('Неверное имя пользователя или пароль', 'error')
+    return render_template('login.html')
+
+# Логаут
+@auth_bp.route('/logout')
+def logout():
+    # Выход через Flask-Login
+    logout_user()
+
+    # Удаляем cookie
+    resp = redirect(url_for('auth.login'))
+    resp.delete_cookie('username')  # Удаляем cookie при выходе
+
+    return resp
+
+%%=============chat.py========%%
+from flask import Blueprint, render_template, request, jsonify
+from flask_socketio import emit, join_room
+from models import db, User, Message, Friendship, Group
+from flask_login import current_user
+from init import socketio
+from html import escape
+import os
+from werkzeug.utils import secure_filename
+from datetime import datetime
+import uuid
+from flask import current_app
+
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf', 'docx', 'txt', 'mp4', 'zip'}
+
+# Сөйлесу үшін Blueprint 
+chat_bp = Blueprint('chat', __name__)
+@socketio.on('connect')
+def handle_connect():
+    if current_user.is_authenticated:
+        join_room(current_user.id)
+        print(f"User {current_user.username} joined room {current_user.id}")
+    else:
+        print("User not authenticated")
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@chat_bp.route('/upload', methods=['POST'])
+def upload_file():
+    # Определяем папку для загрузки относительно static
+    upload_folder = os.path.join('static', 'uploads')
+    full_upload_path = os.path.join(current_app.root_path, upload_folder)
+    
+    # Создаем папку, если она не существует
+    os.makedirs(full_upload_path, exist_ok=True)
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'File type not allowed'}), 400
+
+    try:
+        # Создаем безопасное имя файла
+        filename = secure_filename(file.filename)
+        
+        # Генерируем уникальное имя файла
+        unique_id = uuid.uuid4().hex[:8]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_filename = f"{timestamp}_{unique_id}_{filename}"
+        
+        # Полный путь для сохранения
+        save_path = os.path.join(full_upload_path, unique_filename)
+        
+        # Сохраняем файл
+        file.save(save_path)
+        
+        # Путь для хранения в БД (относительно static)
+        db_file_path = os.path.join('uploads', unique_filename)
+        
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'file_path': db_file_path,  # 'uploads/filename.ext'
+            'file_type': file.mimetype,
+            'file_size': os.path.getsize(save_path)
+        })
+        
+    except Exception as e:
+        current_app.logger.error(f"File upload error: {str(e)}")
+        return jsonify({
+            'error': 'File upload failed',
+            'message': str(e)
+        }), 500
+
+# Чат бетіне арналған Маршрут
+@chat_bp.route('/chat')
+def chat():
+    return render_template('dashboard.html')  # Чат беті
+
+# Пайдаланушының дос екенін тексеру
+def is_friend_with(user, friend):
+    """Проверка, является ли два пользователя друзьями."""
+    if not user.is_authenticated:
+        return False
+    return friend in user.friends.all()
+
+@chat_bp.route('/get_chat_history/<int:friend_id>', methods=['GET'])
+def handle_get_chat_history(friend_id):
+    # Проверяем, авторизован ли пользователь
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Пользователь не авторизован"}), 401
+    
+    # Получаем друга из базы данных
+    friend = User.query.get(friend_id)
+    
+    # Проверяем, что друг существует и что текущий пользователь является другом
+    if not friend or not is_friend_with(current_user, friend):
+        return jsonify({"error": "Дружбы не существует"}), 403
+
+    # Получаем историю чата между текущим пользователем и другом
+    messages = Message.query.filter(
+        ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
+        ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
+    ).order_by(Message.timestamp.asc()).all()
+
+    # Формируем историю сообщений для ответа
+    chat_history = [
+        {
+            "sender": message.sender.username,
+            "avatar": message.sender.avatar_url,
+            "content": message.content,
+            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")  # Преобразуем datetime в строку
+        }
+        for message in messages
+    ]
+    
+    # Возвращаем историю чата в формате JSON
+    return jsonify({"chat_history": chat_history})
+
+# Обработчик WebSocket для получения истории чата
+@socketio.on('get_chat_history')
+def handle_get_chat_history(data):
+    if 'chat_id' not in data or 'chat_type' not in data:
+        return
+    
+    chat_id = data['chat_id']
+    chat_type = data['chat_type']  # personal или group
+
+    # Проверяем, авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('chat_history', {"error": "Пользователь не авторизован"})
+        return
+
+    # Если это личный чат
+    if chat_type == 'personal':
+        friend = User.query.get(chat_id)
+        if not friend or not is_friend_with(current_user, friend):
+            emit('chat_history', {"error": "Нет доступа к чату с этим пользователем"})
+            return
+
+        messages = Message.query.filter(
+            ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
+            ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
+        ).order_by(Message.timestamp.asc()).all()
+
+    # Если это групповой чат
+    elif chat_type == 'group':
+        group = Group.query.get(chat_id)
+        if not group or current_user not in group.members:
+            emit('chat_history', {"error": "Нет доступа к этой группе"})
+            return
+
+        messages = Message.query.filter_by(group_id=group.id).order_by(Message.timestamp.asc()).all()
+
+    # Формируем историю сообщений для ответа
+    chat_history = []
+    for message in messages:
+        message_data = {
+            "sender_username": message.sender.username,
+            "sender_avatar": message.sender.avatar_url,
+            "sender_about": message.sender.about,
+            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "id": message.id
+        }
+
+        # Добавляем информацию в зависимости от типа сообщения
+        if message.content:
+            # Текстовое сообщение
+            message_data["content"] = message.content
+            message_data["is_file"] = False
+        elif message.file_path:
+            # Файловое сообщение
+            message_data.update({
+                "is_file": True,
+                "file_name": message.file_name,
+                "file_path": message.file_path,
+                "file_type": message.file_type,
+                "file_size": message.file_size
+            })
+
+        chat_history.append(message_data)
+    
+    emit('chat_history', {"messages": chat_history})
+
+@socketio.on('delete_message')
+def handle_delete_message(data):
+    message_id = data['message_id']
+    chat_type = data['chat_type']
+    message = Message.query.get(message_id)
+    if not message or message.sender_id != current_user.id:
+        return False
+    db.session.delete(message)
+    db.session.commit()
+    if chat_type == 'personal':
+        emit('message_deleted', {"message_id": message_id}, room=message.receiver_id)
+        emit('message_deleted', {"message_id": message_id}, room=message.sender_id)
+    elif chat_type == 'group':
+        group = Group.query.get(message.group_id)
+        if group:
+            for member in group.members:
+                emit('message_deleted', {"message_id": message_id}, room=member.id)
+    return True
+
+# Обработчик WebSocket для отправки сообщений
+def handle_message_creation(receiver_id, message_content, chat_type):
+    if chat_type == 'personal':
+        receiver = User.query.get(receiver_id)
+        if not receiver or not is_friend_with(current_user, receiver):
+            return False, "Вы не можете отправить сообщение этому пользователю"
+
+        new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if not group or current_user not in group.members:
+            return False, "Вы не можете отправить сообщение в эту группу"
+
+        new_message = Message(content=message_content, sender_id=current_user.id, group_id=group.id)
+    else:
+        return False, "Неверный тип чата"
+
+    db.session.add(new_message)
+    db.session.commit()
+
+    # Подготовка сообщения для отправки всем участникам чата (включая отправителя)
+    message_data = {
+        "chat_id": receiver_id,
+        "chat_type": chat_type,
+        "sender_username": current_user.username,
+        "sender_avatar": current_user.avatar_url,
+        "sender_about": current_user.about,
+        "content": message_content,
+        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    # Если это личный чат, отправляем сообщение обоим участникам (отправителю и получателю)
+    if chat_type == 'personal':
+        emit('new_message', message_data, room=receiver_id)
+        message_data["self_send"] = True
+        emit('new_message', message_data, room=current_user.id)
+
+    # Если это групповой чат, отправляем сообщение всем участникам группы
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if group:
+            for member in group.members:
+                emit('new_message', message_data, room=member.id)
+    return True, None
+
+
+# Обработчик WebSocket для отправки сообщений
+@socketio.on('send_message')
+def handle_send_message(data):
+    if not current_user.is_authenticated:
+        emit('new_message', {"error": "Пользователь не авторизован"})
+        return
+
+    receiver_id = data.get('receiver_id')
+    message_content = data.get('message_content')
+    chat_type = data.get('chat_type')  # Тип чата: 'personal' или 'group'
+    usejs = data.get('usejs')
+    
+    if not usejs:
+        message_content = escape(message_content)
+
+    if not receiver_id or not message_content:
+        emit('new_message', {"error": "Не указаны получатель или сообщение"})
+        return
+
+    success, error_message = handle_message_creation(receiver_id, message_content, chat_type)
+
+    if not success:
+        emit('new_message', {"error": error_message})
+
+# Добавляем новый обработчик для файлов
+def handle_file_message_creation(receiver_id, file_data, chat_type):
+    if chat_type == 'personal':
+        receiver = User.query.get(receiver_id)
+        if not receiver or not is_friend_with(current_user, receiver):
+            return False, "Вы не можете отправить файл этому пользователю"
+
+        new_message = Message(
+            sender_id=current_user.id,
+            receiver_id=receiver.id,
+            file_name=file_data['filename'],
+            file_path=file_data['file_path'],
+            file_type=file_data['file_type'],
+            file_size=file_data['file_size']
+        )
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if not group or current_user not in group.members:
+            return False, "Вы не можете отправить файл в эту группу"
+
+        new_message = Message(
+            sender_id=current_user.id,
+            group_id=group.id,
+            file_name=file_data['filename'],
+            file_path=file_data['file_path'],
+            file_type=file_data['file_type'],
+            file_size=file_data['file_size']
+        )
+    else:
+        return False, "Неверный тип чата"
+
+    db.session.add(new_message)
+    db.session.commit()
+
+    # Подготовка сообщения для отправки
+    message_data = {
+        "chat_id": receiver_id,
+        "chat_type": chat_type,
+        "sender_username": current_user.username,
+        "sender_avatar": current_user.avatar_url,
+        "sender_about": current_user.about,
+        "file_name": file_data['filename'],
+        "file_path": file_data['file_path'],
+        "file_type": file_data['file_type'],
+        "file_size": file_data['file_size'],
+        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        "is_file": True  # Флаг, что это файловое сообщение
+    }
+
+    # Отправка файлового сообщения
+    if chat_type == 'personal':
+        emit('new_message', message_data, room=receiver_id)
+        message_data["self_send"] = True
+        emit('new_message', message_data, room=current_user.id)
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if group:
+            for member in group.members:
+                emit('new_message', message_data, room=member.id)
+    
+    return True, None
+
+
+# Обработчик WebSocket для отправки файлов
+@socketio.on('send_file')
+def handle_send_file(data):
+    if not current_user.is_authenticated:
+        emit('new_message', {"error": "Пользователь не авторизован"})
+        return
+
+    receiver_id = data.get('receiver_id')
+    file_data = data.get('file_data')
+    chat_type = data.get('chat_type')
+
+    if not receiver_id or not file_data:
+        emit('new_message', {"error": "Не указаны получатель или файл"})
+        return
+
+    success, error_message = handle_file_message_creation(receiver_id, file_data, chat_type)
+
+    if not success:
+        emit('new_message', {"error": error_message})
+
+@socketio.on('remove_friend')
+def handle_remove_friend(data):
+    friend_id = data.get('friend_id')
+    if not friend_id:
+        emit('remove_friend_response', {"error": "Friend ID is required"})
+        return
+
+    friend = User.query.get(friend_id)
+    if not friend:
+        emit('remove_friend_response', {"error": "Friend not found"})
+        return
+
+    if not is_friend_with(current_user, friend):
+        emit('remove_friend_response', {"error": "You are not friends with this user"})
+        return
+
+    # Удаляем все возможные записи о дружбе в обоих направлениях
+    friendships = Friendship.query.filter(
+        ((Friendship.user1_id == current_user.id) & (Friendship.user2_id == friend_id)) |
+        ((Friendship.user1_id == friend_id) & (Friendship.user2_id == current_user.id))
+    ).all()
+
+    if not friendships:
+        emit('remove_friend_response', {"error": "Friendship not found"})
+        return
+
+    try:
+        # Удаляем записи о дружбе
+        for friendship in friendships:
+            db.session.delete(friendship)
+
+        db.session.commit()  # Явное завершение транзакции
+        emit('remove_friend_response', {"success": True})
+
+    except Exception as e:
+        db.session.rollback()  # Откатываем изменения в случае ошибки
+        emit('remove_friend_response', {"error": f"Error removing friend: {str(e)}"})
+
+# Добавляем метод к классу User
+def is_friend_with(user, friend):
+    """Проверка, является ли два пользователя друзьями."""
+    if not user.is_authenticated:
+        return False
+    return friend in user.friends.all()
+
+User.is_friend_with = is_friend_with
+
+%%=============dashboard.py========%%
+from flask import Blueprint, render_template
+from flask_login import current_user, login_required
+
+dashboard_bp = Blueprint('dashboard', __name__)
+
+# Убедимся, что только авторизованный пользователь может получить доступ к данному маршруту
+@dashboard_bp.route('/dashboard')
+@login_required
+def dashboard():
+    friends = current_user.friends.all() # Получаем всех друзей пользователя
+    chats = friends # Получаем все чаты, включая друзей
+    groups = current_user.groups.all() # Получаем все группы, к которым принадлежит пользователь
+
+    return render_template('dashboard.html', user=current_user, chats=chats, groups=groups)
+
+
+@dashboard_bp.route('/')
+@dashboard_bp.route('/index')
+def index():
+    return render_template('index.html')
+
+@dashboard_bp.route('/profile')
+@login_required
+def profile():
+    return render_template('profile.html', user=current_user)
+%%=============friend_request.py========%%
+from flask import Blueprint, request, jsonify
+from models import db, User, FriendRequest, Friendship
+
+friend_requests_bp = Blueprint('friend_requests', __name__)
+
+# Отправка запроса на дружбу
+@friend_requests_bp.route('/send_friend_request', methods=['POST'])
+def send_friend_request():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    friend_username = request.form['friend_username']
+    friend = User.query.filter_by(username=friend_username).first()
+    
+    if not friend:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Проверка, что пользователь не пытается добавить себя в друзья
+    if user.id == friend.id:
+        return jsonify({'success': False, 'message': 'Нельзя добавить самого себя в друзья'})
+
+    # Проверка, что уже есть друзья
+    if friend in user.friends:
+        return jsonify({'success': False, 'message': 'Вы уже в друзьях с этим пользователем'})
+
+    # Проверка, что запрос уже был отправлен
+    existing_request = FriendRequest.query.filter_by(sender_id=user.id, receiver_id=friend.id).first()
+    if existing_request:
+        return jsonify({'success': False, 'message': 'Запрос уже отправлен'})
+
+    new_request = FriendRequest(sender_id=user.id, receiver_id=friend.id)
+    db.session.add(new_request)
+    db.session.commit()
+
+    return jsonify({'success': True})
+
+# Получение запросов на дружбу
+@friend_requests_bp.route('/get_friend_requests', methods=['GET'])
+def get_friend_requests():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Получаем входящие запросы
+    incoming_requests = FriendRequest.query.filter_by(receiver_id=user.id).all()
+    outgoing_requests = FriendRequest.query.filter_by(sender_id=user.id).all()
+
+    # Формируем список запросов для отображения в интерфейсе
+    incoming_requests_list = [{'id': r.id, 'sender_username': User.query.get(r.sender_id).username} for r in incoming_requests]
+    outgoing_requests_list = [{'id': r.id, 'receiver_username': User.query.get(r.receiver_id).username} for r in outgoing_requests]
+
+    return jsonify({
+        'success': True,
+        'incoming_requests': incoming_requests_list,
+        'outgoing_requests': outgoing_requests_list
+    })
+
+# Ответ на запрос дружбы (принять/отклонить)
+@friend_requests_bp.route('/respond_friend_request/<int:request_id>/<action>', methods=['GET'])
+def respond_friend_request(request_id, action):
+    # Находим запрос по ID
+    friend_request = FriendRequest.query.get(request_id)
+    if not friend_request:
+        return jsonify({'success': False, 'message': 'Запрос не найден!'})
+
+    if action not in ['accept', 'decline']:
+        return jsonify({'success': False, 'message': 'Неверное действие!'})
+
+    if action == 'accept':
+        # Проверка, что пользователи не являются друзьями
+        user1 = friend_request.sender
+        user2 = friend_request.receiver
+
+        if user2 in user1.friends:
+            return jsonify({'success': False, 'message': 'Вы уже в друзьях с этим пользователем'})
+
+        # Добавляем в таблицу Friendship (связь многие ко многим)
+        friendship1 = Friendship(user1_id=user1.id, user2_id=user2.id)
+        friendship2 = Friendship(user1_id=user2.id, user2_id=user1.id)  # Дублируем для обратной связи
+
+        db.session.add(friendship1)
+        db.session.add(friendship2)
+
+        # Удаляем запрос на дружбу
+        db.session.delete(friend_request)
+        db.session.commit()
+
+        return jsonify({'success': True, 'message': 'Запрос на дружбу принят!'})
+
+    elif action == 'decline':
+        # Просто удаляем запрос
+        db.session.delete(friend_request)
+        db.session.commit()
+
+        return jsonify({'success': True, 'message': 'Запрос на дружбу отклонен.'})
+
+%%=============group.py========%%
+from flask import Blueprint, render_template, redirect, url_for, request, jsonify
+from flask_login import current_user, login_required
+from models import db, Group, GroupMembership, User, Friendship, GroupJoinRequest
+from flask_socketio import emit
+from init import socketio
+
+# Создаем Blueprint для групп
+group_bp = Blueprint('group', __name__)
+
+# API для создания группы
+
+@group_bp.route('/get_groups', methods=['GET'])
+def get_groups():
+    # Получаем все группы, к которым принадлежит текущий пользователь
+    groups = current_user.groups.all()
+    return jsonify([{"id": group.id, "name": group.name} for group in groups])
+
+@group_bp.route('/get_users_for_group', methods=['GET'])
+@login_required
+def get_users_for_group():
+    group_id = request.args.get('group_id')
+    group = Group.query.get(group_id)
+
+    if not group or group.creator_id != current_user.id: return jsonify({'success': False, 'message': 'Вы не являетесь создателем этой группы'})
+
+    # Получаем всех пользователей, которые не являются участниками этой группы и в друзях текущего пользователя
+    try: 
+        users_to_add = db.session.query(User).join(Friendship, 
+    (Friendship.user1_id == current_user.id) | (Friendship.user2_id == current_user.id)
+).filter(
+    User.id != current_user.id  # Исключаем самого себя
+).filter(
+    # Пользователь должен быть другом current_user
+    ((Friendship.user1_id == current_user.id) & (User.id == Friendship.user2_id)) |
+    ((Friendship.user2_id == current_user.id) & (User.id == Friendship.user1_id))
+).filter(
+    ~User.groups.any(Group.id == group_id)  # Пользователь не должен быть в группе с group_id
+).all()
+    except Exception as e: return jsonify({'success': False, 'message': f'Произошла ошибка при получении списка пользователей! {e}'})
+    
+    return jsonify({ 'success': True, 'users': [{'id': user.id, 'username': user.username} for user in users_to_add] })
+
+@group_bp.route('/get_users_in_group', methods=['GET'])
+@login_required
+def get_users_in_group():
+    group_id = request.args.get('group_id')
+    group = Group.query.get(group_id)
+    
+    if not group or group.creator_id != current_user.id: return jsonify({'success': False, 'message': 'Вы не являетесь создателем этой группы'})
+
+    # Получаем всех пользователей, которые являются участниками этой группы
+    try:
+        users_in_group = db.session.query(User).join(GroupMembership, GroupMembership.user_id == User.id).filter(GroupMembership.group_id == group_id).all()
+    except Exception as e: return jsonify({'success': False, 'message': f'Произошла ошибка при получении списка пользователей! {e}'})
+
+    return jsonify({ 'success': True, 'users': [{'id': user.id, 'username': user.username} for user in users_in_group] })
+
+# Обработчик для удаления пользователей из группы
+@group_bp.route('/remove_users_from_group', methods=['POST'])
+@login_required
+def remove_users_from_group():
+    data = request.get_json()  # Получаем данные как JSON
+    group_id = data.get('group_id')
+    user_ids = data.get('users')  # Список ID пользователей, которых нужно удалить
+
+    # Проверка: указано ли ID группы
+    if not group_id:
+        return jsonify({"success": False, "error": "Group ID is required"})
+
+    # Получаем группу по ID
+    group = Group.query.get(group_id)
+    
+    if not group:
+        return jsonify({"success": False, "error": "Group not found"})
+
+    # Проверяем, является ли текущий пользователь создателем группы
+    if group.creator_id != current_user.id:
+        return jsonify({"success": False, "error": "Only the creator can remove users"})
+
+    # Удаляем каждого пользователя
+    removed_users = []
+    for user_id in user_ids:
+        membership = GroupMembership.query.filter_by(group_id=group.id, user_id=user_id).first()
+        if membership:
+            db.session.delete(membership)
+            removed_users.append(user_id)
+    try:
+        db.session.commit()
+        msg = f'Пользователи были удалены из группы {group.name}'
+        if current_user.id in user_ids: 
+            handle_delete_group(group)
+            return jsonify({
+                "success": True,
+                "message": "Ваша группа была удалена. Все пользователи были удалены из группы.",
+                "removed_users": removed_users
+            })
+        return jsonify({
+            "success": True,
+            "message": msg,
+            "removed_users": removed_users
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "success": False,
+            "error": "Error removing users",
+            "details": str(e)
+        })
+
+
+@socketio.on('create_group')
+@login_required
+def handle_create_group(data):
+    group_name = data.get('name')
+
+    # Проверка: авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('create_group_response', {"error": "User is not authenticated"})
+        return
+
+    # Проверка: указано ли имя группы
+    if not group_name or not group_name.strip():
+        emit('create_group_response', {"error": "Group name is required and cannot be empty"})
+        return
+
+    try:
+        # Создаем группу и добавляем создателя как участника
+        new_group = Group(name=group_name.strip(), creator_id=current_user.id)
+        db.session.add(new_group)
+        db.session.commit()
+
+        membership = GroupMembership(group_id=new_group.id, user_id=current_user.id)
+        db.session.add(membership)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        emit('create_group_response', {
+            "success": True,
+            "message": "Группа успешно создана!",
+            "group": {
+                "id": new_group.id,
+                "name": new_group.name,
+                "creator_id": new_group.creator_id,
+                "created_at": new_group.created_at.isoformat()
+            }
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        emit('create_group_response', {"error": "An error occurred while creating the group", "details": str(e)})
+        
+@socketio.on('leave_group')
+@login_required
+def handle_leave_group(data):
+    group_id = data.get('group_id')
+
+    # Проверка: авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('leave_group_response', {"error": "User is not authenticated"})
+        return
+
+    # Проверка: указано ли ID группы
+    if not group_id:
+        emit('leave_group_response', {"error": "Group ID is required and cannot be empty"})
+        return
+
+    try:
+        # Ищем группу по ID
+        group = Group.query.get(group_id)
+
+        if not group:
+            emit('leave_group_response', {"error": "Group not found"})
+            return
+
+        # Проверяем, является ли текущий пользователь создателем группы
+        if group.creator_id == current_user.id:
+            emit('leave_group_response', {"error": "You cannot leave your own group"})
+            return
+
+        # Ищем участника группы
+        membership = GroupMembership.query.filter_by(group_id=group.id, user_id=current_user.id).first()
+
+        if not membership:
+            emit('leave_group_response', {"error": "You are not a member of this group"})
+            return
+
+        # Удаляем участника из группы
+        db.session.delete(membership)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        emit('leave_group_response', {"success": True, "message": "Вы успешно покинули группу"})
+    except Exception as e:
+        db.session.rollback()
+        emit('leave_group_response', {"error": "An error occurred while leaving the group", "details": e})
+
+def handle_delete_group(group):
+    try:
+        if not group:
+            return "Group not found"
+
+        # Проверяем, является ли текущий пользователь создателем группы
+        if group.creator_id != current_user.id:
+            return "Only the creator can remove groups"
+
+        # Удаляем группу
+        db.session.delete(group)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        return True
+    except Exception as e:
+        db.session.rollback()
+        return False, e
+%%=============group_request.py========%%
+from flask import Blueprint, request, jsonify
+from models import db, User, Group, GroupJoinRequest, GroupMembership
+
+group_requests_bp = Blueprint('group_requests', __name__)
+
+# Отправка запроса на присоединение к группе
+@group_requests_bp.route('/send_group_join_request', methods=['POST'])
+def send_group_join_request():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    group_id = request.form['group_id']
+    group = Group.query.get(group_id)
+
+    if not group:
+        return jsonify({'success': False, 'message': 'Группа не найдена'})
+
+    # Проверка, что запрос отправляет создатель группы
+    if group.creator_id != user.id:
+        return jsonify({'success': False, 'message': 'Только создатель группы может отправить запрос'})
+
+    user_id = request.form['user_id']
+    target_user = User.query.get(user_id)
+
+    if not target_user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Проверка, что запрос уже существует
+    existing_request = GroupJoinRequest.query.filter_by(group_id=group_id, user_id=user_id).first()
+    if existing_request:
+        return jsonify({'success': False, 'message': 'Запрос уже отправлен'})
+
+    # Создаем новый запрос
+    new_request = GroupJoinRequest(group_id=group_id, user_id=user_id)
+    db.session.add(new_request)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Запрос отправлен'})
+
+# Получение запросов на присоединение (как входящих, так и исходящих)
+@group_requests_bp.route('/get_group_requests', methods=['GET'])
+def get_group_requests():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Входящие запросы (запросы, которые пользователь должен одобрить/отклонить)
+    incoming_requests = GroupJoinRequest.query.filter_by(user_id=user.id, status='pending').all()
+
+    # Исходящие запросы (запросы, которые отправил пользователь)
+    outgoing_requests = GroupJoinRequest.query.join(Group).filter(Group.creator_id == user.id).all()
+
+    return jsonify({
+        'success': True,
+        'incoming_requests': [{'id': r.id, 'group_name': r.group.name, 'group_id': r.group_id} for r in incoming_requests],
+        'outgoing_requests': [{'id': r.id, 'user_name': r.user.username, 'user_id': r.user_id} for r in outgoing_requests]
+    })
+
+# Ответ на запрос (принять/отклонить)
+@group_requests_bp.route('/respond_group_request/<int:request_id>/<action>', methods=['POST'])
+def respond_group_request(request_id, action):
+    group_request = GroupJoinRequest.query.get(request_id)
+    if not group_request:
+        return jsonify({'success': False, 'message': 'Запрос не найден'})
+
+    if action not in ['accept', 'decline']:
+        return jsonify({'success': False, 'message': 'Неверное действие'})
+
+    if action == 'accept':
+        # Добавляем пользователя в группу
+        new_membership = GroupMembership(group_id=group_request.group_id, user_id=group_request.user_id)
+        db.session.add(new_membership)
+
+    # Удаляем запрос
+    db.session.delete(group_request)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': f'Запрос {"принят" if action == "accept" else "отклонен"}'})
+
+%%=============profile.py========%%
+import os
+import uuid
+from flask import Blueprint, request, redirect, url_for, render_template, flash, send_from_directory, current_app, send_file, send_from_directory, jsonify
+from werkzeug.utils import secure_filename
+from flask_login import current_user, login_required
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db  # Импортируем объект БД и модель User, если потребуется
+
+upload_bp = Blueprint('upload', __name__, template_folder='templates')
+
+# Разрешённые расширения файлов
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
+def allowed_file(filename):
+    """Проверка расширения файла."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@upload_bp.route('/profile/avatar/upload', methods=['POST'])
+@login_required
+def upload_file():
+    # Проверяем, присутствует ли в запросе файл с ключом 'avatar'
+    if 'avatar' not in request.files:
+        flash('Файл не найден в запросе!')
+        return redirect(request.url)
+    
+    file = request.files['avatar']
+    
+    # Если пользователь не выбрал файл, браузер отправляет пустое имя файла
+    if file.filename == '':
+        flash('Не выбран файл для загрузки!')
+        return redirect(request.url)
+    
+    if file and allowed_file(file.filename):
+        # Безопасно формируем имя файла и добавляем уникальный префикс
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{filename}"
+        
+        file_path = os.path.join(current_app.config['UPLOAD_FOLDER'], unique_filename)
+        file.save(file_path)
+        
+        # Обновляечм информацию об аватаре для залогиненного пользователя
+        current_user.avatar_url = f"uploads/{unique_filename}"
+        db.session.commit()
+        
+        flash('Файл успешно загружен!')
+        # Перенаправляем, например, на страницу профиля или туда, где отображается аватар
+        return redirect(url_for('upload.uploaded_file', filename=unique_filename))
+    else:
+        flash('Недопустимый формат файла!')
+        return redirect(request.url)
+
+@upload_bp.route('/avatars/uploads/<filename>')
+def uploaded_file(filename):
+    """
+    Отдаёт загруженный файл.
+    """
+    return send_from_directory(current_app.config['UPLOAD_FOLDER'], filename)
+
+# Обновление личных данных
+@upload_bp.route('/profile/update', methods=['POST'])
+@login_required
+def update_profile():
+    data = request.form
+    current_user.username = data.get('fullName', current_user.username)
+    current_user.email = data.get('email', current_user.email)
+    current_user.about = data.get('about', current_user.about)
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Профиль обновлён успешно!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при сохранении данных: {str(e)}'})
+
+# Смена пароля
+@upload_bp.route('/profile/password/update', methods=['POST'])
+@login_required
+def update_password():
+    data = request.form
+    current_password = data.get('currentPassword')
+    new_password = data.get('newPassword')
+
+    # Проверка текущего пароля
+    if not check_password_hash(current_user.password, current_password):
+        return jsonify({'success': False, 'error': 'Неверный текущий пароль!'})
+
+    # Проверка длины нового пароля
+    if len(new_password) < 6:
+        return jsonify({'success': False, 'error': 'Пароль должен содержать не менее 6 символов!'})
+
+    current_user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Пароль успешно обновлён!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при обновлении пароля: {str(e)}'})
+
+# Настройки уведомлений
+@upload_bp.route('/profile/notifications/update', methods=['POST'])
+@login_required
+def update_notifications():
+    data = request.form
+    email_notifications = data.get('emailNotifications') == 'true'
+    push_notifications = data.get('pushNotifications') == 'true'
+
+    current_user.email_notifications = email_notifications
+    current_user.push_notifications = push_notifications
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Настройки уведомлений обновлены!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при сохранении настроек: {str(e)}'})
+
+%%=============init.py========%%
+from flask import Flask
+from flask_socketio import SocketIO
+from os import path as os, makedirs as osmakedirs
+
+
+def create_app():
+    app = Flask(__name__)
+    app.config['SECRET_KEY'] = 'your_secret_key'
+    app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
+    app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+    
+    # Аватарларды жүктеу қалтасын инициализациялау
+    upload_folder = os.join(app.root_path, 'static', 'uploads')
+    osmakedirs(upload_folder, exist_ok=True)
+    app.config['UPLOAD_FOLDER'] = upload_folder
+    
+    return app
+
+# WebSocket үшін SocketIO қосыңыз
+socketio = SocketIO(async_mode = 'eventlet')
+%%=============mergefile.py========%%
+import os
+
+def merge_files(input_folder, output_file):
+    """
+    Читает все файлы из папки и объединяет их в один файл с разделителями,
+    сохраняя оригинальные переносы строк.
+    
+    :param input_folder: Путь к папке с файлами
+    :param output_file: Путь к выходному файлу
+    """
+    with open(output_file, 'wb') as outfile:  # Открываем в бинарном режиме
+        for filename in os.listdir(input_folder):
+            filepath = os.path.join(input_folder, filename)
+            
+            # Пропускаем подпапки и сам выходной файл, если он есть в папке
+            if os.path.isdir(filepath) or filename == os.path.basename(output_file):
+                continue
+                
+            try:
+                # Записываем разделитель с именем файла (добавляем только один \n в конце)
+                separator = f"\n%%============={filename}========%%\n".encode('utf-8')
+                outfile.write(separator)
+                
+                # Читаем файл в бинарном режиме и записываем как есть
+                with open(filepath, 'rb') as infile:
+                    outfile.write(infile.read())
+                    
+            except Exception as e:
+                print(f"Ошибка при обработке файла {filename}: {str(e)}")
+                continue
+
+if __name__ == "__main__":
+    input_folder = "./"
+    output_file = "./main.txt"
+    
+    if not os.path.isdir(input_folder):
+        print("Ошибка: указанная папка не существует!")
+    else:
+        merge_files(input_folder, output_file)
+        print(f"Все файлы из папки '{input_folder}' успешно объединены в '{output_file}'")
+%%=============models.py========%%
+from flask_sqlalchemy import SQLAlchemy
+from datetime import datetime
+from flask_login import UserMixin
+
+db = SQLAlchemy()
+
+# "Достар" кестесінің моделі-көптеген адамдармен байланыс
+class Friendship(db.Model, UserMixin):
+    __tablename__ = 'friendship'
+
+    user1_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
+    user2_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+# Пайдаланушы моделі
+class User(db.Model, UserMixin):
+    id = db.Column(db.Integer, primary_key=True)
+    username = db.Column(db.String(150), nullable=False, unique=True)
+    password = db.Column(db.String(150), nullable=False)
+    avatar_url = db.Column(db.String(150), nullable=False, default='uploads/default.png')
+    email = db.Column(db.String(150), nullable=False, unique=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    about = db.Column(db.String(500), nullable=True)
+    email_notification = db.Column(db.Boolean, nullable=False, default=True)
+    popup_notification = db.Column(db.Boolean, nullable=False, default=True)
+    sms_notification = db.Column(db.Boolean, nullable=False, default=True)
+    
+
+    # Достар тізімі үшін көптеген байланыстар
+    friends = db.relationship('User',
+                              secondary='friendship',
+                              primaryjoin=(id == Friendship.user1_id),
+                              secondaryjoin=(id == Friendship.user2_id),
+                              backref=db.backref('friends_of', lazy='dynamic'),
+                              lazy='dynamic')
+    
+    # Login manager
+    def get_id(self):
+        return str(self.id)
+
+# Достықты сұрауға арналған Модель (қабылданғаннан немесе қабылданбағаннан кейін жойылады)
+class FriendRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    receiver_id = db.Column(db.Integer, db.ForeignKey('user.id'))
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+
+    sender = db.relationship('User', foreign_keys=[sender_id])  
+    receiver = db.relationship('User', foreign_keys=[receiver_id])
+
+# Топқа қосу сұрауларына арналған Модель
+class GroupJoinRequest(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    group_id = db.Column(db.Integer, db.ForeignKey('group.id'), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    status = db.Column(db.String(50), default='pending')  # pending, accepted, declined
+
+    user = db.relationship('User', foreign_keys=[user_id])
+    group = db.relationship('Group', foreign_keys=[group_id])
+
+
+# Топтық чаттарға арналған Модель
+class Group(db.Model):
+    __tablename__ = 'group'
+    id = db.Column(db.Integer, primary_key=True)
+    name = db.Column(db.String(150), nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    creator_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+
+    # Связь между группой и её участниками
+    members = db.relationship('User',
+                              secondary='group_membership',
+                              backref=db.backref('groups', lazy='dynamic'))
+
+# Топтар мен пайдаланушылар арасындағы көп-көп байланысқа арналған аралық кесте
+class GroupMembership(db.Model):
+    __tablename__ = 'group_membership'
+    group_id = db.Column(db.Integer, db.ForeignKey('group.id'), primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
+    joined_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+# Топтық хабарламаларды қолдау үшін хабарлама үлгісін өзгерту
+class Message(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    receiver_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)  # Жеке хабарламалар үшін
+    group_id = db.Column(db.Integer, db.ForeignKey('group.id'), nullable=True)  # Топтағы хабарламалар үшін
+    content = db.Column(db.Text)
+    
+    timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Новые поля для хранения файлов
+    file_name = db.Column(db.String(255), nullable=True)  # Оригинальное имя файла
+    file_path = db.Column(db.String(512), nullable=True)  # Путь к файлу на сервере
+    file_type = db.Column(db.String(50), nullable=True)  # MIME-тип файла
+    file_size = db.Column(db.Integer, nullable=True)  # Размер файла в байтах
+
+    # Жіберуші мен алушы үшін байланыс
+    sender = db.relationship('User', foreign_keys=[sender_id])
+    receiver = db.relationship('User', foreign_keys=[receiver_id])
+    group = db.relationship('Group', foreign_keys=[group_id])
+
+%%=============notebook.html========%%
+<!DOCTYPE html>
+<html>
+
+<body>
+  <script>
+    let score = 0,
+      interval;
+    document.body.innerHTML = `<h1>Нажми на кнопку, чтобы начать!</h1><button onclick="startGame()">Начать</button><div id="score">Очки: 0</div>`;
+
+    function endGame(){
+      clearInterval(interval);
+      location.reload();
+    }
+
+    function startGame() {
+      document.body.innerHTML = `<h1>Нажимай на квадрат!</h1><button onclick="endGame()">Выйтий</button><div id="square" style="width:100px;height:100px;background-color:blue;position:relative; cursor: pointer"></div><div id="score">Очки: 0</div>`;
+
+      document.getElementById('square').onclick = () => {
+        score++;document.getElementById('score').innerText = `Очки: ${score}`;moveSquare()
+      };
+      interval = setInterval(moveSquare, 1000)
+    };
+
+    function moveSquare() {
+      let square = document.getElementById('square');
+      let x = Math.random() * window.innerWidth - 100,
+        y = Math.random() * window.innerHeight - 100;
+      square.style.left = x + 'px';
+      square.style.top = y + 'px'
+    }
+  </script>
+</body>
+
+</html>
+%%=============output.txt========%%
+
+%%=============auth.py========%%
+from flask import Blueprint, render_template, request, redirect, url_for, make_response, flash
+from flask_login import login_user, logout_user, current_user
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db, User
+
+auth_bp = Blueprint('auth', __name__)
+
+# Регистрация
+@auth_bp.route('/register', methods=['GET', 'POST'])
+def register():
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        email = request.form['email']
+        if User.query.filter_by(username=username).first():
+            flash('Пользователь с таким именем уже существует!', 'error')
+            return redirect(url_for('auth.register'))
+        if User.query.filter_by(email=email).first():
+            flash('Пользователь с таким email уже существует!', 'error')
+            return redirect(url_for('auth.register'))
+        hashed_password = generate_password_hash(password, method='pbkdf2:sha256')
+        new_user = User(username=username, password=hashed_password, email=email)
+        db.session.add(new_user)
+        db.session.commit()
+        flash('Регистрация прошла успешно!', 'success')
+
+        # Авторизуем пользователя
+        login_user(new_user)
+        resp = redirect(url_for('dashboard.dashboard'))
+
+        # Устанавливаем cookie с именем пользователя
+        resp.set_cookie('username', new_user.username)
+        return resp
+    return render_template('register.html')
+
+# Логин
+@auth_bp.route('/login', methods=['GET', 'POST'])
+def login():
+    if current_user.is_authenticated:
+        return redirect(url_for('dashboard.dashboard'))  # Если пользователь уже авторизован, перенаправляем его на dashboard
+
+    # Проверка cookie на наличие имени пользователя
+    username = request.cookies.get('username')
+    if username:
+        user = User.query.filter_by(username=username).first()
+        if user:
+            login_user(user)
+            return redirect(url_for('dashboard.dashboard'))  # Если cookie есть, автоматически авторизуем пользователя
+
+    if request.method == 'POST':
+        username = request.form['username']
+        password = request.form['password']
+        user = User.query.filter_by(username=username).first()
+        if user and check_password_hash(user.password, password):
+            # Входим в систему через Flask-Login
+            login_user(user)
+
+            # Устанавливаем cookie для имени пользователя
+            resp = redirect(url_for('dashboard.dashboard'))
+            resp.set_cookie('username', user.username)  # Устанавливаем cookie с именем пользователя
+
+            return resp
+        else:
+            flash('Неверное имя пользователя или пароль', 'error')
+    return render_template('login.html')
+
+# Логаут
+@auth_bp.route('/logout')
+def logout():
+    # Выход через Flask-Login
+    logout_user()
+
+    # Удаляем cookie
+    resp = redirect(url_for('auth.login'))
+    resp.delete_cookie('username')  # Удаляем cookie при выходе
+
+    return resp
+
+%%=============chat.py========%%
+from flask import Blueprint, render_template, request, jsonify
+from flask_socketio import emit, join_room
+from models import db, User, Message, Friendship, Group
+from flask_login import current_user
+from init import socketio
+from html import escape
+import os
+from werkzeug.utils import secure_filename
+from datetime import datetime
+import uuid
+from flask import current_app
+
+UPLOAD_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'uploads')
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'pdf', 'docx', 'txt', 'mp4', 'zip'}
+
+# Сөйлесу үшін Blueprint 
+chat_bp = Blueprint('chat', __name__)
+@socketio.on('connect')
+def handle_connect():
+    if current_user.is_authenticated:
+        join_room(current_user.id)
+        print(f"User {current_user.username} joined room {current_user.id}")
+    else:
+        print("User not authenticated")
+
+def allowed_file(filename):
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+
+@chat_bp.route('/upload', methods=['POST'])
+def upload_file():
+    # Определяем папку для загрузки относительно static
+    upload_folder = os.path.join('static', 'uploads')
+    full_upload_path = os.path.join(current_app.root_path, upload_folder)
+    
+    # Создаем папку, если она не существует
+    os.makedirs(full_upload_path, exist_ok=True)
+
+    if 'file' not in request.files:
+        return jsonify({'error': 'No file part'}), 400
+    
+    file = request.files['file']
+    
+    if file.filename == '':
+        return jsonify({'error': 'No selected file'}), 400
+    
+    if not allowed_file(file.filename):
+        return jsonify({'error': 'File type not allowed'}), 400
+
+    try:
+        # Создаем безопасное имя файла
+        filename = secure_filename(file.filename)
+        
+        # Генерируем уникальное имя файла
+        unique_id = uuid.uuid4().hex[:8]
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        unique_filename = f"{timestamp}_{unique_id}_{filename}"
+        
+        # Полный путь для сохранения
+        save_path = os.path.join(full_upload_path, unique_filename)
+        
+        # Сохраняем файл
+        file.save(save_path)
+        
+        # Путь для хранения в БД (относительно static)
+        db_file_path = os.path.join('uploads', unique_filename)
+        
+        return jsonify({
+            'success': True,
+            'filename': filename,
+            'file_path': db_file_path,  # 'uploads/filename.ext'
+            'file_type': file.mimetype,
+            'file_size': os.path.getsize(save_path)
+        })
+        
+    except Exception as e:
+        current_app.logger.error(f"File upload error: {str(e)}")
+        return jsonify({
+            'error': 'File upload failed',
+            'message': str(e)
+        }), 500
+
+# Чат бетіне арналған Маршрут
+@chat_bp.route('/chat')
+def chat():
+    return render_template('dashboard.html')  # Чат беті
+
+# Пайдаланушының дос екенін тексеру
+def is_friend_with(user, friend):
+    """Проверка, является ли два пользователя друзьями."""
+    if not user.is_authenticated:
+        return False
+    return friend in user.friends.all()
+
+@chat_bp.route('/get_chat_history/<int:friend_id>', methods=['GET'])
+def handle_get_chat_history(friend_id):
+    # Проверяем, авторизован ли пользователь
+    if not current_user.is_authenticated:
+        return jsonify({"error": "Пользователь не авторизован"}), 401
+    
+    # Получаем друга из базы данных
+    friend = User.query.get(friend_id)
+    
+    # Проверяем, что друг существует и что текущий пользователь является другом
+    if not friend or not is_friend_with(current_user, friend):
+        return jsonify({"error": "Дружбы не существует"}), 403
+
+    # Получаем историю чата между текущим пользователем и другом
+    messages = Message.query.filter(
+        ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
+        ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
+    ).order_by(Message.timestamp.asc()).all()
+
+    # Формируем историю сообщений для ответа
+    chat_history = [
+        {
+            "sender": message.sender.username,
+            "avatar": message.sender.avatar_url,
+            "content": message.content,
+            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S")  # Преобразуем datetime в строку
+        }
+        for message in messages
+    ]
+    
+    # Возвращаем историю чата в формате JSON
+    return jsonify({"chat_history": chat_history})
+
+# Обработчик WebSocket для получения истории чата
+@socketio.on('get_chat_history')
+def handle_get_chat_history(data):
+    if 'chat_id' not in data or 'chat_type' not in data:
+        return
+    
+    chat_id = data['chat_id']
+    chat_type = data['chat_type']  # personal или group
+
+    # Проверяем, авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('chat_history', {"error": "Пользователь не авторизован"})
+        return
+
+    # Если это личный чат
+    if chat_type == 'personal':
+        friend = User.query.get(chat_id)
+        if not friend or not is_friend_with(current_user, friend):
+            emit('chat_history', {"error": "Нет доступа к чату с этим пользователем"})
+            return
+
+        messages = Message.query.filter(
+            ((Message.sender_id == current_user.id) & (Message.receiver_id == friend.id)) |
+            ((Message.sender_id == friend.id) & (Message.receiver_id == current_user.id))
+        ).order_by(Message.timestamp.asc()).all()
+
+    # Если это групповой чат
+    elif chat_type == 'group':
+        group = Group.query.get(chat_id)
+        if not group or current_user not in group.members:
+            emit('chat_history', {"error": "Нет доступа к этой группе"})
+            return
+
+        messages = Message.query.filter_by(group_id=group.id).order_by(Message.timestamp.asc()).all()
+
+    # Формируем историю сообщений для ответа
+    chat_history = []
+    for message in messages:
+        message_data = {
+            "sender_username": message.sender.username,
+            "sender_avatar": message.sender.avatar_url,
+            "sender_about": message.sender.about,
+            "timestamp": message.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+            "id": message.id
+        }
+
+        # Добавляем информацию в зависимости от типа сообщения
+        if message.content:
+            # Текстовое сообщение
+            message_data["content"] = message.content
+            message_data["is_file"] = False
+        elif message.file_path:
+            # Файловое сообщение
+            message_data.update({
+                "is_file": True,
+                "file_name": message.file_name,
+                "file_path": message.file_path,
+                "file_type": message.file_type,
+                "file_size": message.file_size
+            })
+
+        chat_history.append(message_data)
+    
+    emit('chat_history', {"messages": chat_history})
+
+@socketio.on('delete_message')
+def handle_delete_message(data):
+    message_id = data['message_id']
+    chat_type = data['chat_type']
+    message = Message.query.get(message_id)
+    if not message or message.sender_id != current_user.id:
+        return False
+    db.session.delete(message)
+    db.session.commit()
+    if chat_type == 'personal':
+        emit('message_deleted', {"message_id": message_id}, room=message.receiver_id)
+        emit('message_deleted', {"message_id": message_id}, room=message.sender_id)
+    elif chat_type == 'group':
+        group = Group.query.get(message.group_id)
+        if group:
+            for member in group.members:
+                emit('message_deleted', {"message_id": message_id}, room=member.id)
+    return True
+
+# Обработчик WebSocket для отправки сообщений
+def handle_message_creation(receiver_id, message_content, chat_type):
+    if chat_type == 'personal':
+        receiver = User.query.get(receiver_id)
+        if not receiver or not is_friend_with(current_user, receiver):
+            return False, "Вы не можете отправить сообщение этому пользователю"
+
+        new_message = Message(content=message_content, sender_id=current_user.id, receiver_id=receiver.id)
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if not group or current_user not in group.members:
+            return False, "Вы не можете отправить сообщение в эту группу"
+
+        new_message = Message(content=message_content, sender_id=current_user.id, group_id=group.id)
+    else:
+        return False, "Неверный тип чата"
+
+    db.session.add(new_message)
+    db.session.commit()
+
+    # Подготовка сообщения для отправки всем участникам чата (включая отправителя)
+    message_data = {
+        "chat_id": receiver_id,
+        "chat_type": chat_type,
+        "sender_username": current_user.username,
+        "sender_avatar": current_user.avatar_url,
+        "sender_about": current_user.about,
+        "content": message_content,
+        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S")
+    }
+
+    # Если это личный чат, отправляем сообщение обоим участникам (отправителю и получателю)
+    if chat_type == 'personal':
+        emit('new_message', message_data, room=receiver_id)
+        message_data["self_send"] = True
+        emit('new_message', message_data, room=current_user.id)
+
+    # Если это групповой чат, отправляем сообщение всем участникам группы
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if group:
+            for member in group.members:
+                emit('new_message', message_data, room=member.id)
+    return True, None
+
+
+# Обработчик WebSocket для отправки сообщений
+@socketio.on('send_message')
+def handle_send_message(data):
+    if not current_user.is_authenticated:
+        emit('new_message', {"error": "Пользователь не авторизован"})
+        return
+
+    receiver_id = data.get('receiver_id')
+    message_content = data.get('message_content')
+    chat_type = data.get('chat_type')  # Тип чата: 'personal' или 'group'
+    usejs = data.get('usejs')
+    
+    if not usejs:
+        message_content = escape(message_content)
+
+    if not receiver_id or not message_content:
+        emit('new_message', {"error": "Не указаны получатель или сообщение"})
+        return
+
+    success, error_message = handle_message_creation(receiver_id, message_content, chat_type)
+
+    if not success:
+        emit('new_message', {"error": error_message})
+
+# Добавляем новый обработчик для файлов
+def handle_file_message_creation(receiver_id, file_data, chat_type):
+    if chat_type == 'personal':
+        receiver = User.query.get(receiver_id)
+        if not receiver or not is_friend_with(current_user, receiver):
+            return False, "Вы не можете отправить файл этому пользователю"
+
+        new_message = Message(
+            sender_id=current_user.id,
+            receiver_id=receiver.id,
+            file_name=file_data['filename'],
+            file_path=file_data['file_path'],
+            file_type=file_data['file_type'],
+            file_size=file_data['file_size']
+        )
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if not group or current_user not in group.members:
+            return False, "Вы не можете отправить файл в эту группу"
+
+        new_message = Message(
+            sender_id=current_user.id,
+            group_id=group.id,
+            file_name=file_data['filename'],
+            file_path=file_data['file_path'],
+            file_type=file_data['file_type'],
+            file_size=file_data['file_size']
+        )
+    else:
+        return False, "Неверный тип чата"
+
+    db.session.add(new_message)
+    db.session.commit()
+
+    # Подготовка сообщения для отправки
+    message_data = {
+        "chat_id": receiver_id,
+        "chat_type": chat_type,
+        "sender_username": current_user.username,
+        "sender_avatar": current_user.avatar_url,
+        "sender_about": current_user.about,
+        "file_name": file_data['filename'],
+        "file_path": file_data['file_path'],
+        "file_type": file_data['file_type'],
+        "file_size": file_data['file_size'],
+        "timestamp": new_message.timestamp.strftime("%Y-%m-%d %H:%M:%S"),
+        "is_file": True  # Флаг, что это файловое сообщение
+    }
+
+    # Отправка файлового сообщения
+    if chat_type == 'personal':
+        emit('new_message', message_data, room=receiver_id)
+        message_data["self_send"] = True
+        emit('new_message', message_data, room=current_user.id)
+    elif chat_type == 'group':
+        group = Group.query.get(receiver_id)
+        if group:
+            for member in group.members:
+                emit('new_message', message_data, room=member.id)
+    
+    return True, None
+
+
+# Обработчик WebSocket для отправки файлов
+@socketio.on('send_file')
+def handle_send_file(data):
+    if not current_user.is_authenticated:
+        emit('new_message', {"error": "Пользователь не авторизован"})
+        return
+
+    receiver_id = data.get('receiver_id')
+    file_data = data.get('file_data')
+    chat_type = data.get('chat_type')
+
+    if not receiver_id or not file_data:
+        emit('new_message', {"error": "Не указаны получатель или файл"})
+        return
+
+    success, error_message = handle_file_message_creation(receiver_id, file_data, chat_type)
+
+    if not success:
+        emit('new_message', {"error": error_message})
+
+@socketio.on('remove_friend')
+def handle_remove_friend(data):
+    friend_id = data.get('friend_id')
+    if not friend_id:
+        emit('remove_friend_response', {"error": "Friend ID is required"})
+        return
+
+    friend = User.query.get(friend_id)
+    if not friend:
+        emit('remove_friend_response', {"error": "Friend not found"})
+        return
+
+    if not is_friend_with(current_user, friend):
+        emit('remove_friend_response', {"error": "You are not friends with this user"})
+        return
+
+    # Удаляем все возможные записи о дружбе в обоих направлениях
+    friendships = Friendship.query.filter(
+        ((Friendship.user1_id == current_user.id) & (Friendship.user2_id == friend_id)) |
+        ((Friendship.user1_id == friend_id) & (Friendship.user2_id == current_user.id))
+    ).all()
+
+    if not friendships:
+        emit('remove_friend_response', {"error": "Friendship not found"})
+        return
+
+    try:
+        # Удаляем записи о дружбе
+        for friendship in friendships:
+            db.session.delete(friendship)
+
+        db.session.commit()  # Явное завершение транзакции
+        emit('remove_friend_response', {"success": True})
+
+    except Exception as e:
+        db.session.rollback()  # Откатываем изменения в случае ошибки
+        emit('remove_friend_response', {"error": f"Error removing friend: {str(e)}"})
+
+# Добавляем метод к классу User
+def is_friend_with(user, friend):
+    """Проверка, является ли два пользователя друзьями."""
+    if not user.is_authenticated:
+        return False
+    return friend in user.friends.all()
+
+User.is_friend_with = is_friend_with
+
+%%=============dashboard.py========%%
+from flask import Blueprint, render_template
+from flask_login import current_user, login_required
+
+dashboard_bp = Blueprint('dashboard', __name__)
+
+# Убедимся, что только авторизованный пользователь может получить доступ к данному маршруту
+@dashboard_bp.route('/dashboard')
+@login_required
+def dashboard():
+    friends = current_user.friends.all() # Получаем всех друзей пользователя
+    chats = friends # Получаем все чаты, включая друзей
+    groups = current_user.groups.all() # Получаем все группы, к которым принадлежит пользователь
+
+    return render_template('dashboard.html', user=current_user, chats=chats, groups=groups)
+
+
+@dashboard_bp.route('/')
+@dashboard_bp.route('/index')
+def index():
+    return render_template('index.html')
+
+@dashboard_bp.route('/profile')
+@login_required
+def profile():
+    return render_template('profile.html', user=current_user)
+%%=============friend_request.py========%%
+from flask import Blueprint, request, jsonify
+from models import db, User, FriendRequest, Friendship
+
+friend_requests_bp = Blueprint('friend_requests', __name__)
+
+# Отправка запроса на дружбу
+@friend_requests_bp.route('/send_friend_request', methods=['POST'])
+def send_friend_request():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    friend_username = request.form['friend_username']
+    friend = User.query.filter_by(username=friend_username).first()
+    
+    if not friend:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Проверка, что пользователь не пытается добавить себя в друзья
+    if user.id == friend.id:
+        return jsonify({'success': False, 'message': 'Нельзя добавить самого себя в друзья'})
+
+    # Проверка, что уже есть друзья
+    if friend in user.friends:
+        return jsonify({'success': False, 'message': 'Вы уже в друзьях с этим пользователем'})
+
+    # Проверка, что запрос уже был отправлен
+    existing_request = FriendRequest.query.filter_by(sender_id=user.id, receiver_id=friend.id).first()
+    if existing_request:
+        return jsonify({'success': False, 'message': 'Запрос уже отправлен'})
+
+    new_request = FriendRequest(sender_id=user.id, receiver_id=friend.id)
+    db.session.add(new_request)
+    db.session.commit()
+
+    return jsonify({'success': True})
+
+# Получение запросов на дружбу
+@friend_requests_bp.route('/get_friend_requests', methods=['GET'])
+def get_friend_requests():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Получаем входящие запросы
+    incoming_requests = FriendRequest.query.filter_by(receiver_id=user.id).all()
+    outgoing_requests = FriendRequest.query.filter_by(sender_id=user.id).all()
+
+    # Формируем список запросов для отображения в интерфейсе
+    incoming_requests_list = [{'id': r.id, 'sender_username': User.query.get(r.sender_id).username} for r in incoming_requests]
+    outgoing_requests_list = [{'id': r.id, 'receiver_username': User.query.get(r.receiver_id).username} for r in outgoing_requests]
+
+    return jsonify({
+        'success': True,
+        'incoming_requests': incoming_requests_list,
+        'outgoing_requests': outgoing_requests_list
+    })
+
+# Ответ на запрос дружбы (принять/отклонить)
+@friend_requests_bp.route('/respond_friend_request/<int:request_id>/<action>', methods=['GET'])
+def respond_friend_request(request_id, action):
+    # Находим запрос по ID
+    friend_request = FriendRequest.query.get(request_id)
+    if not friend_request:
+        return jsonify({'success': False, 'message': 'Запрос не найден!'})
+
+    if action not in ['accept', 'decline']:
+        return jsonify({'success': False, 'message': 'Неверное действие!'})
+
+    if action == 'accept':
+        # Проверка, что пользователи не являются друзьями
+        user1 = friend_request.sender
+        user2 = friend_request.receiver
+
+        if user2 in user1.friends:
+            return jsonify({'success': False, 'message': 'Вы уже в друзьях с этим пользователем'})
+
+        # Добавляем в таблицу Friendship (связь многие ко многим)
+        friendship1 = Friendship(user1_id=user1.id, user2_id=user2.id)
+        friendship2 = Friendship(user1_id=user2.id, user2_id=user1.id)  # Дублируем для обратной связи
+
+        db.session.add(friendship1)
+        db.session.add(friendship2)
+
+        # Удаляем запрос на дружбу
+        db.session.delete(friend_request)
+        db.session.commit()
+
+        return jsonify({'success': True, 'message': 'Запрос на дружбу принят!'})
+
+    elif action == 'decline':
+        # Просто удаляем запрос
+        db.session.delete(friend_request)
+        db.session.commit()
+
+        return jsonify({'success': True, 'message': 'Запрос на дружбу отклонен.'})
+
+%%=============group.py========%%
+from flask import Blueprint, render_template, redirect, url_for, request, jsonify
+from flask_login import current_user, login_required
+from models import db, Group, GroupMembership, User, Friendship, GroupJoinRequest
+from flask_socketio import emit
+from init import socketio
+
+# Создаем Blueprint для групп
+group_bp = Blueprint('group', __name__)
+
+# API для создания группы
+
+@group_bp.route('/get_groups', methods=['GET'])
+def get_groups():
+    # Получаем все группы, к которым принадлежит текущий пользователь
+    groups = current_user.groups.all()
+    return jsonify([{"id": group.id, "name": group.name} for group in groups])
+
+@group_bp.route('/get_users_for_group', methods=['GET'])
+@login_required
+def get_users_for_group():
+    group_id = request.args.get('group_id')
+    group = Group.query.get(group_id)
+
+    if not group or group.creator_id != current_user.id: return jsonify({'success': False, 'message': 'Вы не являетесь создателем этой группы'})
+
+    # Получаем всех пользователей, которые не являются участниками этой группы и в друзях текущего пользователя
+    try: 
+        users_to_add = db.session.query(User).join(Friendship, 
+    (Friendship.user1_id == current_user.id) | (Friendship.user2_id == current_user.id)
+).filter(
+    User.id != current_user.id  # Исключаем самого себя
+).filter(
+    # Пользователь должен быть другом current_user
+    ((Friendship.user1_id == current_user.id) & (User.id == Friendship.user2_id)) |
+    ((Friendship.user2_id == current_user.id) & (User.id == Friendship.user1_id))
+).filter(
+    ~User.groups.any(Group.id == group_id)  # Пользователь не должен быть в группе с group_id
+).all()
+    except Exception as e: return jsonify({'success': False, 'message': f'Произошла ошибка при получении списка пользователей! {e}'})
+    
+    return jsonify({ 'success': True, 'users': [{'id': user.id, 'username': user.username} for user in users_to_add] })
+
+@group_bp.route('/get_users_in_group', methods=['GET'])
+@login_required
+def get_users_in_group():
+    group_id = request.args.get('group_id')
+    group = Group.query.get(group_id)
+    
+    if not group or group.creator_id != current_user.id: return jsonify({'success': False, 'message': 'Вы не являетесь создателем этой группы'})
+
+    # Получаем всех пользователей, которые являются участниками этой группы
+    try:
+        users_in_group = db.session.query(User).join(GroupMembership, GroupMembership.user_id == User.id).filter(GroupMembership.group_id == group_id).all()
+    except Exception as e: return jsonify({'success': False, 'message': f'Произошла ошибка при получении списка пользователей! {e}'})
+
+    return jsonify({ 'success': True, 'users': [{'id': user.id, 'username': user.username} for user in users_in_group] })
+
+# Обработчик для удаления пользователей из группы
+@group_bp.route('/remove_users_from_group', methods=['POST'])
+@login_required
+def remove_users_from_group():
+    data = request.get_json()  # Получаем данные как JSON
+    group_id = data.get('group_id')
+    user_ids = data.get('users')  # Список ID пользователей, которых нужно удалить
+
+    # Проверка: указано ли ID группы
+    if not group_id:
+        return jsonify({"success": False, "error": "Group ID is required"})
+
+    # Получаем группу по ID
+    group = Group.query.get(group_id)
+    
+    if not group:
+        return jsonify({"success": False, "error": "Group not found"})
+
+    # Проверяем, является ли текущий пользователь создателем группы
+    if group.creator_id != current_user.id:
+        return jsonify({"success": False, "error": "Only the creator can remove users"})
+
+    # Удаляем каждого пользователя
+    removed_users = []
+    for user_id in user_ids:
+        membership = GroupMembership.query.filter_by(group_id=group.id, user_id=user_id).first()
+        if membership:
+            db.session.delete(membership)
+            removed_users.append(user_id)
+    try:
+        db.session.commit()
+        msg = f'Пользователи были удалены из группы {group.name}'
+        if current_user.id in user_ids: 
+            handle_delete_group(group)
+            return jsonify({
+                "success": True,
+                "message": "Ваша группа была удалена. Все пользователи были удалены из группы.",
+                "removed_users": removed_users
+            })
+        return jsonify({
+            "success": True,
+            "message": msg,
+            "removed_users": removed_users
+        })
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({
+            "success": False,
+            "error": "Error removing users",
+            "details": str(e)
+        })
+
+
+@socketio.on('create_group')
+@login_required
+def handle_create_group(data):
+    group_name = data.get('name')
+
+    # Проверка: авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('create_group_response', {"error": "User is not authenticated"})
+        return
+
+    # Проверка: указано ли имя группы
+    if not group_name or not group_name.strip():
+        emit('create_group_response', {"error": "Group name is required and cannot be empty"})
+        return
+
+    try:
+        # Создаем группу и добавляем создателя как участника
+        new_group = Group(name=group_name.strip(), creator_id=current_user.id)
+        db.session.add(new_group)
+        db.session.commit()
+
+        membership = GroupMembership(group_id=new_group.id, user_id=current_user.id)
+        db.session.add(membership)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        emit('create_group_response', {
+            "success": True,
+            "message": "Группа успешно создана!",
+            "group": {
+                "id": new_group.id,
+                "name": new_group.name,
+                "creator_id": new_group.creator_id,
+                "created_at": new_group.created_at.isoformat()
+            }
+        })
+
+    except Exception as e:
+        db.session.rollback()
+        emit('create_group_response', {"error": "An error occurred while creating the group", "details": str(e)})
+        
+@socketio.on('leave_group')
+@login_required
+def handle_leave_group(data):
+    group_id = data.get('group_id')
+
+    # Проверка: авторизован ли пользователь
+    if not current_user.is_authenticated:
+        emit('leave_group_response', {"error": "User is not authenticated"})
+        return
+
+    # Проверка: указано ли ID группы
+    if not group_id:
+        emit('leave_group_response', {"error": "Group ID is required and cannot be empty"})
+        return
+
+    try:
+        # Ищем группу по ID
+        group = Group.query.get(group_id)
+
+        if not group:
+            emit('leave_group_response', {"error": "Group not found"})
+            return
+
+        # Проверяем, является ли текущий пользователь создателем группы
+        if group.creator_id == current_user.id:
+            emit('leave_group_response', {"error": "You cannot leave your own group"})
+            return
+
+        # Ищем участника группы
+        membership = GroupMembership.query.filter_by(group_id=group.id, user_id=current_user.id).first()
+
+        if not membership:
+            emit('leave_group_response', {"error": "You are not a member of this group"})
+            return
+
+        # Удаляем участника из группы
+        db.session.delete(membership)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        emit('leave_group_response', {"success": True, "message": "Вы успешно покинули группу"})
+    except Exception as e:
+        db.session.rollback()
+        emit('leave_group_response', {"error": "An error occurred while leaving the group", "details": e})
+
+def handle_delete_group(group):
+    try:
+        if not group:
+            return "Group not found"
+
+        # Проверяем, является ли текущий пользователь создателем группы
+        if group.creator_id != current_user.id:
+            return "Only the creator can remove groups"
+
+        # Удаляем группу
+        db.session.delete(group)
+        db.session.commit()
+
+        # Отправляем успешный ответ
+        return True
+    except Exception as e:
+        db.session.rollback()
+        return False, e
+%%=============group_request.py========%%
+from flask import Blueprint, request, jsonify
+from models import db, User, Group, GroupJoinRequest, GroupMembership
+
+group_requests_bp = Blueprint('group_requests', __name__)
+
+# Отправка запроса на присоединение к группе
+@group_requests_bp.route('/send_group_join_request', methods=['POST'])
+def send_group_join_request():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    group_id = request.form['group_id']
+    group = Group.query.get(group_id)
+
+    if not group:
+        return jsonify({'success': False, 'message': 'Группа не найдена'})
+
+    # Проверка, что запрос отправляет создатель группы
+    if group.creator_id != user.id:
+        return jsonify({'success': False, 'message': 'Только создатель группы может отправить запрос'})
+
+    user_id = request.form['user_id']
+    target_user = User.query.get(user_id)
+
+    if not target_user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Проверка, что запрос уже существует
+    existing_request = GroupJoinRequest.query.filter_by(group_id=group_id, user_id=user_id).first()
+    if existing_request:
+        return jsonify({'success': False, 'message': 'Запрос уже отправлен'})
+
+    # Создаем новый запрос
+    new_request = GroupJoinRequest(group_id=group_id, user_id=user_id)
+    db.session.add(new_request)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': 'Запрос отправлен'})
+
+# Получение запросов на присоединение (как входящих, так и исходящих)
+@group_requests_bp.route('/get_group_requests', methods=['GET'])
+def get_group_requests():
+    username = request.cookies.get('username')
+    if not username:
+        return jsonify({'success': False, 'message': 'Пользователь не авторизован'})
+
+    user = User.query.filter_by(username=username).first()
+    if not user:
+        return jsonify({'success': False, 'message': 'Пользователь не найден'})
+
+    # Входящие запросы (запросы, которые пользователь должен одобрить/отклонить)
+    incoming_requests = GroupJoinRequest.query.filter_by(user_id=user.id, status='pending').all()
+
+    # Исходящие запросы (запросы, которые отправил пользователь)
+    outgoing_requests = GroupJoinRequest.query.join(Group).filter(Group.creator_id == user.id).all()
+
+    return jsonify({
+        'success': True,
+        'incoming_requests': [{'id': r.id, 'group_name': r.group.name, 'group_id': r.group_id} for r in incoming_requests],
+        'outgoing_requests': [{'id': r.id, 'user_name': r.user.username, 'user_id': r.user_id} for r in outgoing_requests]
+    })
+
+# Ответ на запрос (принять/отклонить)
+@group_requests_bp.route('/respond_group_request/<int:request_id>/<action>', methods=['POST'])
+def respond_group_request(request_id, action):
+    group_request = GroupJoinRequest.query.get(request_id)
+    if not group_request:
+        return jsonify({'success': False, 'message': 'Запрос не найден'})
+
+    if action not in ['accept', 'decline']:
+        return jsonify({'success': False, 'message': 'Неверное действие'})
+
+    if action == 'accept':
+        # Добавляем пользователя в группу
+        new_membership = GroupMembership(group_id=group_request.group_id, user_id=group_request.user_id)
+        db.session.add(new_membership)
+
+    # Удаляем запрос
+    db.session.delete(group_request)
+    db.session.commit()
+
+    return jsonify({'success': True, 'message': f'Запрос {"принят" if action == "accept" else "отклонен"}'})
+
+%%=============profile.py========%%
+import os
+import uuid
+from flask import Blueprint, request, redirect, url_for, render_template, flash, send_from_directory, current_app, send_file, send_from_directory, jsonify
+from werkzeug.utils import secure_filename
+from flask_login import current_user, login_required
+from werkzeug.security import generate_password_hash, check_password_hash
+from models import db  # Импортируем объект БД и модель User, если потребуется
+
+upload_bp = Blueprint('upload', __name__, template_folder='templates')
+
+# Разрешённые расширения файлов
+ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif'}
+
+def allowed_file(filename):
+    """Проверка расширения файла."""
+    return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
+
+@upload_bp.route('/profile/avatar/upload', methods=['POST'])
+@login_required
+def upload_file():
+    # Проверяем, присутствует ли в запросе файл с ключом 'avatar'
+    if 'avatar' not in request.files:
+        flash('Файл не найден в запросе!')
+        return redirect(request.url)
+    
+    file = request.files['avatar']
+    
+    # Если пользователь не выбрал файл, браузер отправляет пустое имя файла
+    if file.filename == '':
+        flash('Не выбран файл для загрузки!')
+        return redirect(request.url)
+    
+    if file and allowed_file(file.filename):
+        # Безопасно формируем имя файла и добавляем уникальный префикс
+        filename = secure_filename(file.filename)
+        unique_filename = f"{uuid.uuid4().hex}_{filename}"
+        
+        file_path = os.path.join(current_app.config['UPLOAD_FOLDER'], unique_filename)
+        file.save(file_path)
+        
+        # Обновляечм информацию об аватаре для залогиненного пользователя
+        current_user.avatar_url = f"uploads/{unique_filename}"
+        db.session.commit()
+        
+        flash('Файл успешно загружен!')
+        # Перенаправляем, например, на страницу профиля или туда, где отображается аватар
+        return redirect(url_for('upload.uploaded_file', filename=unique_filename))
+    else:
+        flash('Недопустимый формат файла!')
+        return redirect(request.url)
+
+@upload_bp.route('/avatars/uploads/<filename>')
+def uploaded_file(filename):
+    """
+    Отдаёт загруженный файл.
+    """
+    return send_from_directory(current_app.config['UPLOAD_FOLDER'], filename)
+
+# Обновление личных данных
+@upload_bp.route('/profile/update', methods=['POST'])
+@login_required
+def update_profile():
+    data = request.form
+    current_user.username = data.get('fullName', current_user.username)
+    current_user.email = data.get('email', current_user.email)
+    current_user.about = data.get('about', current_user.about)
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Профиль обновлён успешно!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при сохранении данных: {str(e)}'})
+
+# Смена пароля
+@upload_bp.route('/profile/password/update', methods=['POST'])
+@login_required
+def update_password():
+    data = request.form
+    current_password = data.get('currentPassword')
+    new_password = data.get('newPassword')
+
+    # Проверка текущего пароля
+    if not check_password_hash(current_user.password, current_password):
+        return jsonify({'success': False, 'error': 'Неверный текущий пароль!'})
+
+    # Проверка длины нового пароля
+    if len(new_password) < 6:
+        return jsonify({'success': False, 'error': 'Пароль должен содержать не менее 6 символов!'})
+
+    current_user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Пароль успешно обновлён!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при обновлении пароля: {str(e)}'})
+
+# Настройки уведомлений
+@upload_bp.route('/profile/notifications/update', methods=['POST'])
+@login_required
+def update_notifications():
+    data = request.form
+    email_notifications = data.get('emailNotifications') == 'true'
+    push_notifications = data.get('pushNotifications') == 'true'
+
+    current_user.email_notifications = email_notifications
+    current_user.push_notifications = push_notifications
+
+    try:
+        db.session.commit()
+        return jsonify({'success': True, 'message': 'Настройки уведомлений обновлены!'})
+    except Exception as e:
+        db.session.rollback()
+        return jsonify({'success': False, 'error': f'Ошибка при сохранении настроек: {str(e)}'})
+
+%%=============staticJS.txt========%%
+
+%%=============chat.js========%%
+// Устанавливаем соединение с WebSocket
+const socket = io.connect(window.location.origin);
+
+
+// Обработчик клика на чат (групповой или личный)
+$(document).on('click', '.nav-link', function() {
+    const chatId = $(this).data('chat-id');
+    const chatType = $(this).data('chat-type');  // Получаем тип чата (personal или group)
+
+    // Убираем класс active у всех ссылок
+    $('.nav-link').removeClass('active');
+
+    // Добавляем класс active к текущему чату
+    $(this).addClass('active');
+
+    // Отправляем запрос на сервер для получения истории чата
+    socket.emit('get_chat_history', { chat_id: chatId, chat_type: chatType });
+
+    // Очищаем окно сообщений
+    $('#messages').empty();
+
+});
+
+socket.on('chat_history', function(data) {
+    const messages = data.messages;
+
+    if (data.error) {
+        $('#messages').html('<p class="error-message">' + data.error + '</p>');
+        return;
+    }
+
+    $('#messages').empty(); // Очищаем перед добавлением новой истории
+
+    messages.forEach(function(message) {
+        let contentHtml = '';
+
+        if (message.is_file) {
+            if (message.file_type === 'image/png') {
+                contentHtml = `
+                    <div class="file-message">
+                        <p><strong>Файл:</strong> <a href="static/${message.file_path}" download>${message.file_name}</a></p>
+                        <img src="static/${message.file_path}" alt="File" class="me-2" width="100%">
+                        <p><small>${message.file_type}, ${Math.round(message.file_size / 1024)} KB</small></p>
+                    </div>
+                `;
+            } else if (message.file_type === 'application/x-zip-compressed') {
+                contentHtml = `
+                    <div class="file-message">
+                        <p><strong>Файл:</strong> <a href="static/${message.file_path}" download>${message.file_name}</a></p>
+                        <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" fill="currentColor" class="bi bi-file-earmark-zip" viewBox="0 0 16 16">
+                        <path d="M5 7.5a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v.938l.4 1.599a1 1 0 0 1-.416 1.074l-.93.62a1 1 0 0 1-1.11 0l-.929-.62a1 1 0 0 1-.415-1.074L5 8.438zm2 0H6v.938a1 1 0 0 1-.03.243l-.4 1.598.93.62.929-.62-.4-1.598A1 1 0 0 1 7 8.438z"/>
+                        <path d="M14 4.5V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2h5.5zm-3 0A1.5 1.5 0 0 1 9.5 3V1h-2v1h-1v1h1v1h-1v1h1v1H6V5H5V4h1V3H5V2h1V1H4a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4.5z"/>
+                        </svg>
+                        <p><small>${message.file_type}, ${Math.round(message.file_size / 1024)} KB</small></p>
+                    </div>
+                `;
+            }
+        } else {
+            // Обычное текстовое сообщение
+            contentHtml = `<p class="mb-0">${message.content}</p>`;
+        }
+
+        $('#messages').append(
+            '<div class="d-flex align-items-start">' +  // Контейнер с выравниванием по верху
+                '<div class="flex-grow-1">' +
+                    '<div class="d-flex align-items-center">' +  // Горизонтальное выравнивание имени и кнопки
+                        '<strong>' + message.sender_username + ':</strong>' +
+                        '<button class="ml-2 delete-message btn p-0" data-message-id="' + message.id + '">' +
+                            '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="#ff0000" class="bi bi-trash" viewBox="0 0 16 16">' +
+                                '<path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>' +
+                                '<path fill-rule="evenodd" d="M14.5 3a1 1 0 0 1-1 1H13v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V4h-.5a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1H6a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1h3.5a1 1 0 0 1 1 1v1zM4.118 4L4 4.059V13a1 1 0 0 0 1 1h6a1 1 0 0 0 1-1V4.059L11.882 4H4.118zM2.5 3V2h11v1h-11z"/>' +
+                            '</svg>' +
+                        '</button>' +
+                    '</div>' +
+                    '<div class="message-content">' +  // Контент сообщения
+                        contentHtml +
+                    '</div>' +
+                '</div>' +
+            '</div>'
+        );
+    });
+
+    $('[data-toggle="popover"]').popover({ trigger: 'click', container: 'body' });
+    $('#messages').scrollTop($('#messages')[0].scrollHeight);
+});
+ 
+
+
+// Функция для отправки сообщения
+function sendMessage() {
+    const messageContent = $('#message-input').val();
+    const messageType = $('#code-inpput').val();
+    
+    // Получаем id чата или группы
+    const chatId = $('#chat-list .nav-link.active').data('chat-id');
+    const chatType = $('#chat-list .nav-link.active').data('chat-type'); // personal или group
+
+    // Использовать JS?
+    const useJS = $('#code-input').is(':checked');
+
+    if (messageContent) {
+        // Отправляем сообщение через WebSocket
+        socket.emit('send_message', {
+            receiver_id: chatId,
+            message_content: messageContent,
+            chat_type: chatType,
+            message_type: messageType,
+            usejs: useJS
+        });
+
+        // Очищаем поле ввода
+        $('#message-input').val('');
+    }
+}
+
+
+$('#file-upload').on('change', function(e) {
+    // Получаем файл непосредственно из текущего элемента
+    const file = this.files[0];
+    
+    if (!file) {
+        alert('Выберите файл');
+        return;
+    }
+
+    // Проверка размера файла (например, до 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+        alert('Файл слишком большой! Максимальный размер: 10MB');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('file', file);
+
+    // Показываем индикатор загрузки
+    $('#file-upload').prop('disabled', true);
+    $('.file-upload-label').text('Загрузка...');
+
+    // 1. Сначала отправим файл на сервер через HTTP
+    $.ajax({
+        url: '/upload',
+        method: 'POST',
+        data: formData,
+        processData: false,
+        contentType: false,
+        success: function(response) {
+            if (response.error) {
+                alert('Ошибка при загрузке файла: ' + response.error);
+                return;
+            }
+
+            // 2. После успешной загрузки — отправим WebSocket сообщение
+            const activeChat = $('#chat-list .nav-link.active');
+            if (activeChat.length === 0) {
+                alert('Выберите чат для отправки файла');
+                return;
+            }
+
+            const chatId = activeChat.data('chat-id');
+            const chatType = activeChat.data('chat-type'); // personal или group
+
+            socket.emit('send_file', {
+                receiver_id: chatId,
+                chat_type: chatType,
+                file_data: {
+                    filename: response.filename,
+                    file_path: response.file_path,
+                    file_type: response.file_type,
+                    file_size: response.file_size
+                }
+            });
+        },
+        error: function(xhr, status, error) {
+            alert('Ошибка при загрузке файла: ' + error + ' (' + status + ')' + xhr.responseText);
+        },
+        complete: function() {
+            // Восстанавливаем состояние
+            $('#file-upload').val('').prop('disabled', false);
+            $('.file-upload-label').text('Выбрать файл');
+        }
+    });
+});
+
+
+
+// Обработчик для отправки сообщения по кнопке
+$('#send-button').click(function() {
+    sendMessage();
+});
+
+// Обработчик для отправки сообщения при нажатии клавиши Enter
+$('#message-input').keypress(function(event) {
+    if (event.which === 13) {  
+        event.preventDefault();  
+        sendMessage();  
+    }
+});
+
+// Функция для прокрутки вниз
+function scrollToBottom() {
+    const messagesContainer = $('#messages');
+    setTimeout(function() {
+        messagesContainer.scrollTop(messagesContainer[0].scrollHeight);
+    }, 50); // Немного задерживаем прокрутку, чтобы DOM успел обновиться
+}
+
+// Проверка, если пользователь находится внизу чата
+function isScrolledToBottom() {
+    const messagesContainer = $('#messages');
+    return messagesContainer[0].scrollHeight - messagesContainer.scrollTop() === messagesContainer.outerHeight();
+}
+
+$(document).on('click', '.delete-message', function() {
+    const messageId = $(this).data('message-id');
+    const chatType = $('#chat-list .nav-link.active').data('chat-type');
+    deleteMessage(messageId, chatType);
+});
+
+// Функция для удаления сообщения
+function deleteMessage(messageId, chatType) {
+    // Отправляем запрос на сервер через WebSocket
+    // Проверяем, что пользователь подтверждает удаление
+    if (!confirm('Вы действительно хотите удалить это сообщение?')) {
+        return;
+    }
+
+    // Отправляем запрос на сервер через WebSocket
+    socket.emit('delete_message', {
+        message_id: messageId,
+        chat_type: chatType
+    }, function(response) {
+        if (response === false) {
+            alert('Не удалось удалить сообщение. Возможно, у вас нет прав.');
+        }
+    });
+}
+
+// Обработчик события удаления сообщения от сервера
+socket.on('message_deleted', function(data) {
+    const messageId = data.message_id;
+    
+    // Находим элемент сообщения в DOM
+    const messageElement = $(`[data-message-id="${messageId}"]`);
+    
+    if (messageElement.length) {
+        // Создаем эффект удаления
+        messageElement.fadeOut(300, function() {
+            $(this).remove();
+            
+            // Обновляем интерфейс, если нужно
+            if ($('#messages').children().length === 0) {
+                $('#messages').html('<p class="text-muted">Нет сообщений</p>');
+            }
+        });
+    }
+});
+
+
+socket.on('new_message', function(message) {
+    let contentHtml = '';
+    
+    // Проверяем, является ли сообщение файлом
+    if (message.is_file) {
+        if (message.file_type.startsWith('image/')) {
+            // Для изображений показываем превью
+            contentHtml = `
+                <div class="file-message">
+                    <p><strong>Файл:</strong> <a href="/static/${message.file_path}" download>${message.file_name}</a></p>
+                    <img src="/static/${message.file_path}" alt="File" class="me-2" width="100%">
+                    <p><small>${message.file_type}, ${Math.round(message.file_size / 1024)} KB</small></p>
+                </div>
+            `;
+        } else {
+            // Для других типов файлов просто ссылка
+            contentHtml = `
+                <div class="file-message">
+                    <p><strong>Файл:</strong> <a href="/static/${message.file_path}" download>${message.file_name}</a></p>
+                    <p><small>${message.file_type}, ${Math.round(message.file_size / 1024)} KB</small></p>
+                </div>
+            `;
+        }
+    } else {
+        // Обычное текстовое сообщение
+        contentHtml = `<p class="mb-0">${message.content}</p>`;
+    }
+
+    // Создаем элемент сообщения
+    const messageElement = $(
+        '<div class="message align-items-center mb-2 d-flex" data-message-id="' + message.id + '">' +
+            '<div class="mr-4">' +
+                '<img src="/avatars/' + message.sender_avatar + '" alt="Avatar" class="message-avatar me-2" ' +
+                     'data-toggle="popover" data-title="' + message.sender_username + '" ' + 
+                     'data-content="' + (message.sender_about || '*У пользователя нет описания*') + '" ' + 
+                     'data-placement="top" id="popover-img-' + message.sender_username + '">' +
+            '</div>' +
+            '<div>' +
+                '<strong>' + message.sender_username + ':</strong>' +
+                contentHtml +
+            '</div>' +
+        '</div>'
+    );
+
+    // Добавляем сообщение в чат
+    $('#messages').append(messageElement);
+    
+    // Инициализируем popover
+    $('[data-toggle="popover"]').popover({ trigger: 'click', container: 'body' });
+    
+    // Прокручиваем вниз, если это наше сообщение
+    if (message.self_send) {
+        $('#messages').scrollTop($('#messages')[0].scrollHeight);
+    }
+    
+    console.log('New message:', message);
+});
+
+// Обработчик клика по кнопке "Выйти из группы"
+$(document).on('click', '.leave-group-btn', function() {
+    var groupId = $(this).data('group-id');
+
+    // Подтверждение выхода из группы
+    if (confirm('Вы уверены, что хотите выйти из этой группы?')) {
+        // Отправка события на сервер
+        socket.emit('leave_group', { group_id: groupId });
+    }
+});
+// Обработчик ответа от сервера
+socket.on('leave_group_response', function(response) {
+    if (response.success) {
+        alert(response.message);
+        // Удаление группы из списка чатов
+        $('button.leave-group-btn[data-group-id="' + response.group_id + '"]').closest('li').remove();
+    } else {
+        alert('Ошибка: ' + (response.error || 'Неизвестная ошибка'));
+    }
+});
+
+
+// Обработчик нажатия на кнопку удаления друга
+$('.delete-chat-btn').on('click', function() {
+    var chatId = $(this).data('chat-id');  // Получаем ID чата
+    // Отправляем запрос на сервер для удаления друга через WebSocket
+    socket.emit('remove_friend', {
+        'friend_id': chatId
+    });
+});
+// Обрабатываем ответ от сервера
+socket.on('remove_friend_response', function(response) {
+    if (response.success) {
+        // Если операция успешна, удаляем элемент из списка
+        $('#chat-' + chatId).closest('li').remove();
+    } else if (response.error) {
+        // Если ошибка, показываем сообщение
+        alert(response.error);
+    }
+});
+
+%%=============dashboard.js========%%
+$(document).ready(function() {
+    // Обработчик клика на кнопку "Создать группу"
+    $('#create-group-button').on('click', function() {
+        // Открытие модального окна для создания группы
+        $('#createGroupModal').modal('show');
+    });
+    // Обработчик события для кнопки создания группы
+    $('#confirmCreateGroup').click(function() {
+        // Получаем имя группы из поля ввода
+        var groupName = $('#groupName').val().trim();
+
+        // Если имя группы пустое, показываем ошибку
+        if (!groupName) {
+            $('#createGroupError').text('Пожалуйста, введите имя группы.').removeClass('d-none');
+            return;
+        }
+
+        // Отправляем запрос на сервер через сокеты
+        socket.emit('create_group', { name: groupName });
+
+        // Очистка поля ввода и скрытие ошибки
+        $('#createGroupError').addClass('d-none');
+        $('#groupName').val('');
+        location.reload();
+    });
+
+    // Обработчик ответа от сервера
+    socket.on('create_group_response', function(data) {
+        if (data.error) {
+            // Если произошла ошибка, выводим сообщение об ошибке
+            $('#createGroupError').text(data.error).removeClass('d-none');
+        } else if (data.success) {
+            // Если группа была успешно создана, закрываем модальное окно
+            $('#createGroupModal').modal('hide');
+
+            // Выводим уведомление об успешном создании
+            alert(data.message);
+
+            // Здесь можно добавить логику для обновления UI или перехода в чат группы
+        }
+    });
+});
+
+$(document).ready(function() {
+    // Обработчики переключения вкладок
+    $('#friend-requests-tab').click(function() {
+        loadFriendRequests(); // Загружаем запросы на дружбу
+    });
+
+    $('#group-requests-tab').click(function() {
+        loadGroupRequests(); // Загружаем запросы на присоединение к группе
+    });
+
+    // Обработчик кнопки "Запросы"
+    $('#show-requests-button').click(function() {
+        $('#requestsModal').modal('show');
+        loadFriendRequests(); // Загружаем запросы на дружбу по умолчанию при открытии модального окна
+    });
+
+    // Функция для загрузки запросов на дружбу
+    function loadFriendRequests() {
+        $.ajax({
+            url: '/get_friend_requests',  // Эндпоинт для получения запросов на дружбу
+            type: 'GET',
+            success: function(response) {
+                if (response.success) {
+                    $('#requests-list').empty(); // Очистка предыдущих запросов
+                    
+                    // Добавление входящих запросов
+                    response.incoming_requests.forEach(function(request) {
+                        $('#requests-list').append(
+                            `<li>${request.sender_username} 
+                            <button class="btn btn-sm btn-success" onclick="respondFriendRequest(${request.id}, 'accept')">Принять</button>
+                            <button class="btn btn-sm btn-danger" onclick="respondFriendRequest(${request.id}, 'decline')">Отклонить</button></li>`
+                        );
+                    });
+
+                    // Добавление исходящих запросов
+                    response.outgoing_requests.forEach(function(request) {
+                        $('#requests-list').append(
+                            `<li>${request.receiver_username} 
+                            <button class="btn btn-sm btn-danger" onclick="respondFriendRequest(${request.id}, 'cancel')">Отменить</button></li>`
+                        );
+                    });
+                } else {
+                    alert(response.message);
+                }
+            },
+            error: function() {
+                alert('Ошибка при получении запросов на дружбу.');
+            }
+        });
+    }
+
+    // Функция для отклика на запросы на дружбу
+    window.respondFriendRequest = function(requestId, action) {
+        $.ajax({
+            url: `/respond_friend_request/${requestId}/${action}`,
+            type: 'GET',
+            success: function(response) {
+                if (response.success) {
+                    loadFriendRequests(); // Перезагружаем запросы на дружбу
+                } else {
+                    alert(response.message);
+                }
+            },
+            error: function() {
+                alert('Ошибка при обработке запроса на дружбу.');
+            }
+        });
+    };
+
+// Функция для загрузки запросов на присоединение к группе
+function loadGroupRequests() {
+    $.ajax({
+        url: '/get_group_requests',  // Эндпоинт для получения запросов на присоединение (согласуем с сервером)
+        type: 'GET',
+        success: function(response) {
+            if (response.success) {
+                $('#requests-list').empty(); // Очистка предыдущих запросов
+
+                // Добавление входящих запросов на присоединение к группе
+                response.incoming_requests.forEach(function(request) {
+                    $('#requests-list').append(
+                        `<li>${request.group_name} 
+                        <button class="btn btn-sm btn-success" onclick="respondGroupRequest(${request.id}, 'accept')">Принять</button>
+                        <button class="btn btn-sm btn-danger" onclick="respondGroupRequest(${request.id}, 'decline')">Отклонить</button></li>`
+                    );
+                });
+
+                // Добавление исходящих запросов на присоединение к группе
+                response.outgoing_requests.forEach(function(request) {
+                    $('#requests-list').append(
+                        `<li>${request.group_name} 
+                        <button class="btn btn-sm btn-danger" onclick="respondGroupRequest(${request.id}, 'cancel')">Отменить</button></li>`
+                    );
+                });
+            } else {
+                alert(response.message);
+            }
+        },
+        error: function() {
+            alert('Ошибка при получении запросов на присоединение к группе.');
+        }
+    });
+}
+
+// Функция для отклика на запросы на присоединение к группе
+window.respondGroupRequest = function(requestId, action) {
+    $.ajax({
+        url: `/respond_group_request/${requestId}/${action}`, // Используем POST для изменения статуса запроса
+        type: 'POST',  // Изменил на POST, чтобы соответствовать серверному коду
+        success: function(response) {
+            if (response.success) {
+                loadGroupRequests(); // Перезагружаем запросы на присоединение
+            } else {
+                alert(response.message);
+            }
+        },
+        error: function() {
+            alert('Ошибка при обработке запроса на присоединение к группе.');
+        }
+    });
+};
+
+});
+
+%%=============friend_request.js========%%
+$(document).ready(function() {
+    // Открытие модального окна для отправки запроса в друзья
+    $('#send-friend-request').click(function() {
+        $('#nicknameModal').modal('show');
+    });
+
+    // Отправка запроса в друзья через AJAX
+    $('#confirm-send-request').click(function() {
+        const username = $('#friend-username').val();
+        if (username) {
+            $.ajax({
+                url: '/send_friend_request',
+                type: 'POST',
+                data: { 'friend_username': username },
+                success: function(response) {
+                    if (response.success) {
+                        alert('Запрос отправлен!');
+                        $('#nicknameModal').modal('hide');
+                    } else {
+                        alert(response.message);
+                    }
+                },
+                error: function() {
+                    alert('Ошибка отправки запроса.');
+                }
+            });
+        } else {
+            alert('Пожалуйста, введите никнейм.');
+        }
+    });
+
+    // Удалить из друзей
+    $('#remove-from-friends').click(function() {
+        const friendId = $(this).data('friend-id');
+        if (!friendId) {
+            alert('Неизвестный пользователь.');
+            return;
+        }
+        $.ajax({
+            url: '/remove_from_friends',
+            type: 'POST',
+            data: { 'friend_id': friendId },
+            success: function(response) {
+                if (response.success) {
+                    alert('Пользователь удален из друзей!');
+                    location.reload();
+                } else {
+                    alert(response.message);
+                }
+            },
+            error: function() {
+                alert('Ошибка при удалении из друзей.');
+            }
+        })
+    })
+
+    // Получение запросов в друзья через AJAX
+    $('#show-requests-button').click(function() {
+        $.ajax({
+            url: '/get_friend_requests',
+            type: 'GET',
+            success: function(response) {
+                if (response.success) {
+                    // Очистка предыдущих запросов
+                    $('#friend-requests-list').empty();
+                    
+                    // Добавление новых запросов
+                    response.incoming_requests.forEach(function(request) {
+                        $('#friend-requests-list').append(
+                            '<li>' + request.sender_username + ` <button class="btn btn-sm btn-success" onclick="respondFriendRequest(${request.id}, 'accept')">Принять</button> <button class="btn btn-sm btn-danger" onclick="declineRequest(${request.id})">Отклонить</button></li>`
+                        );
+                    });
+
+                    response.outgoing_requests.forEach(function(request) {
+                        $('#friend-requests-list').append(
+                            '<li>' + request.receiver_username + ` <button class="btn btn-sm btn-danger" onclick="respondFriendRequest(${request.id}, 'cancel')">Отменить</button></li>`
+                        );
+                    });
+
+                    $('#requestsModal').modal('show');
+                } else {
+                    alert(response.message);
+                }
+            },
+            error: function() {
+                alert('Ошибка при получении запросов.');
+            }
+        });
+    });
+
+    // Отправка сообщения в чат через AJAX
+    $('#send-button').click(function() {
+        const messageContent = $('#message-input').val();
+        if (messageContent) {
+            $.ajax({
+                url: '/send_message',
+                type: 'POST',
+                data: { 'message_content': messageContent },
+                success: function(response) {
+                    if (response.success) {
+                        $('#messages').append('<p><strong>' + response.sender + ':</strong> ' + messageContent + '</p>');
+                        $('#message-input').val('');
+                    } else {
+                        alert('Ошибка отправки сообщения.');
+                    }
+                },
+                error: function() {
+                    alert('Ошибка отправки сообщения.');
+                }
+            });
+        }
+    });
+});
+
+function respondFriendRequest(requestId, action) {
+    $.ajax({
+        url: `/respond_friend_request/${requestId}/${action}`,
+        type: 'GET',
+        success: function(response) {
+            if (response.success) {
+                alert(action === 'accept' ? 'Запрос принят!' : 'Запрос отклонен!');
+                $('#requestsModal').modal('hide');
+            } else {
+                alert('Ошибка при обработке запроса.');
+            }
+        },
+        error: function() {
+            alert('Ошибка при обработке запроса.');
+        }
+    });
+}
+
+function cancelRequest(requestId) {
+    $.ajax({
+        url: '/respond_friend_request/' + requestId + '/decline',
+        type: 'GET',
+        success: function(response) {
+            if (response.success) {
+                alert('Запрос отменен!');
+                $('#requestsModal').modal('hide');
+            } else {
+                alert('Ошибка при отмене запроса.');
+            }
+        },
+        error: function() {
+            alert('Ошибка при отмене запроса.');
+        }
+    });
+}
+
+%%=============group_request.js========%%
+// Универсальный обработчик для добавления и удаления пользователей из группы
+$(document).on('click', '.add-user-btn', function () {
+    const groupId = $(this).data('group-id');
+
+    // Устанавливаем groupId и действие в модальное окно
+    $('#add-user-modal').data('group-id', groupId);
+    $('#add-user-modal').data('action', 'add_users');
+
+    // Обновляем заголовок модального окна для добавления
+    $('#add-user-modal .modal-title').text('Добавить пользователей в группу');
+
+    // Открываем модальное окно
+    $('#add-user-modal').modal('show');
+
+    // Отправляем запрос на сервер для получения списка пользователей
+    $.ajax({
+        url: '/get_users_for_group',
+        method: 'GET',
+        data: { group_id: groupId },
+        success: function (response) {
+            if (response.success) {
+                // Заполняем список пользователей
+                const usersList = $('#users-list');
+                usersList.empty();
+                response.users.forEach(user => {
+                    usersList.append(`
+                        <li>
+                            <input type="checkbox" name="user" value="${user.id}" /> ${user.username}
+                        </li>
+                    `);
+                });
+            } else {
+                alert('Ошибка при загрузке списка пользователей');
+            }
+        },
+        error: function () {
+            alert('Ошибка при выполнении запроса к серверу');
+        }
+    });
+});
+
+// Обработчик переключения на режим удаления пользователей -
+$('#remove-users').click(function (event) {
+    const groupId = $('#add-user-modal').data('group-id');
+    // Предотвращаем стандартное поведение кнопки
+    event.preventDefault();
+    event.stopPropagation();
+    
+    // Меняем действие на "удалить пользователей"
+    $('#add-user-modal').data('action', 'remove_users');
+
+    // Обновляем заголовок модального окна
+    $('#add-user-modal .modal-title').text('Удалить пользователей из группы');
+
+    // Скрываем кнопку "Добавить" и показываем кнопку "Удалить"
+    $('#add-users').removeClass('d-none');
+    $('#remove-users').addClass('d-none');
+    if (!confirm("При удалений себя из группы группа со всеми участниками будет удалена. Продолжить?")){
+        return
+    }
+
+    // Отправляем запрос на сервер для получения списка пользователей, которых можно удалить
+    $.ajax({
+        url: '/get_users_in_group',
+        method: 'GET',
+        data: { group_id: groupId },
+        success: function (response) {
+            console.log(response);
+            if (response.success) {
+                // Заполняем список пользователей для удаления
+                const usersList = $('#users-list');
+                usersList.empty();
+                response.users.forEach(user => {
+                    usersList.append(`
+                        <li>
+                            <input type="checkbox" name="user" value="${user.id}" /> ${user.username}
+                        </li>
+                    `);
+                });
+            } else {
+                alert('Ошибка при загрузке списка пользователей для удаления');
+            }
+        },
+        error: function () {
+            alert('Ошибка при выполнении запроса к серверу');
+        }
+    });
+});
+
+// Обработчик переключения на режим добавления пользователей +
+$('#add-users').click(function (event) {
+    // Предотвращаем стандартное поведение кнопки
+    event.preventDefault();
+    event.stopPropagation();
+    // Возвращаем режим добавления
+    $('#add-user-modal').data('action', 'add_users');
+    
+    // Обновляем заголовок
+    $('#add-user-modal .modal-title').text('Добавить пользователей в группу');
+
+    // Скрываем кнопку "Удалить" и показываем кнопку "Добавить"
+    $('#add-users').addClass('d-none');
+    $('#remove-users').removeClass('d-none');
+    
+    // Отправляем запрос для получения списка пользователей для добавления
+    const groupId = $('#add-user-modal').data('group-id');
+    $.ajax({
+        url: '/get_users_for_group',
+        method: 'GET',
+        
+        data: { group_id: groupId },
+        success: function (response) {
+            if (response.success) {
+                // Заполняем список пользователей для добавления
+                const usersList = $('#users-list');
+                usersList.empty();
+                response.users.forEach(user => {
+                    usersList.append(`
+                        <li>
+                            <input type="checkbox" name="user" value="${user.id}" /> ${user.username}
+                        </li>
+                    `);
+                });
+            } else {
+                alert('Ошибка при загрузке списка пользователей для добавления');
+            }
+        },
+        error: function () {
+            alert('Ошибка при выполнении запроса к серверу');
+        }
+    });
+});
+
+// Обработчик кнопки "Выполнить" (для добавления или удаления пользователей)
+$('#add-users-button').click(function () {
+    const groupId = $('#add-user-modal').data('group-id');  // ID группы
+    const action = $('#add-user-modal').data('action');     // Режим работы: добавление или удаление
+
+    // Собираем ID выбранных пользователей как числа
+    const selectedUserIds = [];
+    $('#users-list input[name="user"]:checked').each(function () {
+        selectedUserIds.push(parseInt($(this).val(), 10));  // Преобразуем в числа
+    });
+
+    if (selectedUserIds.length === 0) {
+        alert('Выберите хотя бы одного пользователя!');
+        return;
+    }
+
+    if (action === 'add_users') {
+        // Отправляем запрос на присоединение для каждого выбранного пользователя
+        selectedUserIds.forEach(userId => {
+            $.ajax({
+                url: '/send_group_join_request',
+                method: 'POST',
+                data: {
+                    group_id: groupId,
+                    user_id: userId
+                },
+                success: function (response) {
+                    if (response.success) {
+                        alert(`Запрос на добавление пользователя успешно отправлен`);
+                    } else {
+                        alert(`Ошибка при отправке запроса: ${response.message}`);
+                    }
+                },
+                error: function () {
+                    alert('Ошибка при выполнении запроса на сервер');
+                }
+            });
+        });
+    } else if (action === 'remove_users') {
+        // Удаление пользователей (происходит сразу)
+        $.ajax({
+            url: '/remove_users_from_group',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                group_id: groupId,
+                users: selectedUserIds
+            }),
+            success: function (response) {
+                if (response.success) {
+                    alert(response.message);
+                } else {
+                    alert('Ошибка при удалении пользователей: ' + response.error);
+                }
+            },
+            error: function () {
+                alert('Ошибка при выполнении запроса на сервер');
+            }
+        });
+    }
+
+    // Закрытие модального окна после выполнения действия
+    $('#add-user-modal').modal('hide');
+});
+
+
+%%=============profile.js========%%
+document.getElementById('profileImage').addEventListener('change', function(event) {
+    const file = event.target.files[0];
+
+    if (file) {
+        const formData = new FormData();
+        formData.append('avatar', file); // Ключ должен совпадать с тем, что ожидает сервер
+
+        fetch('/profile/avatar/upload', {
+            method: 'POST',
+            body: formData
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Ошибка при загрузке аватара');
+            }
+            return response.text(); // Или response.json()
+        })
+        .then(data => {
+            console.log('Успешно загружено:', data);
+
+            // Обновляем аватар на странице без перезагрузки
+            document.getElementById("profileImage").src = data;
+            location.reload();
+        })
+        .catch(error => {
+            console.error('Ошибка:', error);
+        });
+    }
+});
+
+
+// Функция для отправки данных на сервер
+async function sendData(url, method, data) {
+    try {
+        const response = await fetch(url, {
+            method: method,
+            body: data,
+        });
+
+        // Если ответ - изображение, обрабатываем как blob
+        if (response.headers.get("Content-Type").startsWith("image/")) {
+            const blob = await response.blob();
+            const imgURL = URL.createObjectURL(blob);
+            // Тут вы можете обновить изображение на странице, например:
+            document.getElementById("profileImage").src = imgURL;
+            alert('Изображение успешно загружено!');
+        } else {
+            const result = await response.json();
+            if (result.success) {
+                alert('Изменения успешно сохранены!');
+            } else {
+                alert(result.error || 'Произошла ошибка!');
+            }
+        }
+
+    } catch (error) {
+        console.error('Ошибка:', error);
+        alert('Ошибка сети!');
+    }
+}
+
+
+// Загрузка аватара
+document.getElementById('profileImage').addEventListener('change', function () {
+    const formData = new FormData();
+    formData.append('avatar', this.files[0]);
+
+    sendData('/profile/avatar/upload', 'POST', formData);
+});
+
+// Сохранение личных данных
+document.querySelector('#list-personal form').addEventListener('submit', function (e) {
+    e.preventDefault();
+
+    const formData = new FormData();
+    formData.append('fullName', document.getElementById('fullName').value);
+    formData.append('email', document.getElementById('email').value);
+    formData.append('about', document.getElementById('about').value);
+
+    sendData('/profile/update', 'POST', formData);
+});
+
+// Обновление пароля
+document.querySelector('#list-security form').addEventListener('submit', function (e) {
+    e.preventDefault();
+
+    const currentPassword = document.getElementById('currentPassword').value;
+    const newPassword = document.getElementById('newPassword').value;
+    const confirmPassword = document.getElementById('confirmPassword').value;
+
+    if (newPassword !== confirmPassword) {
+        alert('Пароли не совпадают!');
+        return;
+    }
+
+    const formData = new FormData();
+    formData.append('currentPassword', currentPassword);
+    formData.append('newPassword', newPassword);
+
+    sendData('/profile/password/update', 'POST', formData);
+});
+
+// Настройки уведомлений
+document.querySelector('#list-notifications form').addEventListener('submit', function (e) {
+    e.preventDefault();
+
+    const formData = new FormData();
+    formData.append('emailNotifications', document.getElementById('emailNotifications').checked);
+    formData.append('pushNotifications', document.getElementById('pushNotifications').checked);
+
+    sendData('/profile/notifications/update', 'POST', formData);
+});
+
+%%=============templates.txt========%%
+
+%%=============dashboard.html========%%
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dashboard</title>
+    <link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+</head>
+<body>
+    <div class="dashboard">
+        <div class="header">
+            <h4 class="my-0">Dashboard</h4>
+            <div>
+                <button class="btn btn-custom" id="send-friend-request">Сұрау жіберу</button>
+                <button class="btn btn-custom" id="show-requests-button">Сұраулар</button>
+                <button class="btn btn-custom" id="create-group-button">Топ құру</button>
+                <a href="{{ url_for('dashboard.profile') }}" class="btn btn-custom">Профиль параметрлері</a>
+            </div>
+        </div>
+        <div class="main">
+            <div class="sidebar">
+                <h5 class="text-center my-4">Менің чаттарым</h5>
+                <!-- В разделе "Мои чаты" будут отображаться все чаты -->
+                <div class="chats-section">
+                    <ul class="nav flex-column" id="chat-list">
+                        <!-- Личные чаты -->
+                        {% for chat in chats %}
+                        <li class="nav-item d-flex justify-content-between align-items-center">
+                            <a class="nav-link" href="javascript:void(0);" id="chat-{{ chat.id }}" data-chat-id="{{ chat.id }}" data-chat-type="personal">{{ chat.username }}</a>
+                            <button class="btn btn-sm btn-danger delete-chat-btn" data-chat-id="{{ chat.id }}">-</button>
+                        </li>
+                        {% endfor %}
+                        <!-- Группы -->
+                        {% for group in groups %}
+                            <li class="nav-item d-flex justify-content-between align-items-center">
+                                <a class="nav-link" href="javascript:void(0);" id="group-{{ group.id }}" data-chat-id="{{ group.id }}" data-chat-type="group">
+                                    {{ group.name }}
+                                </a>
+                                <!-- Проверка, является ли текущий пользователь создателем группы -->
+                                {% if group.creator_id == current_user.id %}
+                                    <button class="btn btn-sm btn-primary add-user-btn" data-group-id="{{ group.id }}">+</button>
+                                {% endif %}
+                                {% if group.creator_id != current_user.id %}
+                                    <button class="btn btn-sm btn-danger leave-group-btn" data-group-id="{{ group.id }}">-</button>
+                                {% endif %}
+                            </li>
+                        {% endfor %}
+                    </ul>
+                </div>
+                <a class="nav-link text-center mt-auto mb-4" href="{{ url_for('auth.logout') }}">Шығу</a>
+            </div>
+            <div class="chat-window">
+                <div class="messages" id="messages">
+                    <!-- Сообщения чатов будут здесь -->
+                </div>
+
+                <!-- Место для отображения системных сообщений -->
+                {% with messages = get_flashed_messages(with_categories=true) %}
+                    {% if messages %}
+                        <div class="flash-messages">
+                            {% for category, message in messages %}
+                                <div class="flash-message {{ category }}">
+                                    {{ message }}
+                                </div>
+                            {% endfor %}
+                        </div>
+                    {% endif %}
+                {% endwith %}
+
+                <div class="chat-input">
+                    <input type="text" id="message-input" placeholder="Хабарлама жазыңыз...">
+                    <!-- Добавленная кнопка для выбора файла -->
+                    <button id="send-button" class="btn btn-custom">Жіберу</button>
+                    <div class="d-flex flex-column align-items-center ml-2">
+                        <!-- Кнопка загрузки файла (скрепка) -->
+                        <label for="file-upload" class="btn btn-light p-0 mb-1">
+                            <input type="file" id="file-upload" style="display: none;">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="currentColor" class="bi bi-paperclip paperclip-icon" viewBox="0 0 16 16">
+                                <path d="M4.5 3a2.5 2.5 0 0 1 5 0v9a1.5 1.5 0 0 1-3 0V5a.5.5 0 0 1 1 0v7a.5.5 0 0 0 1 0V3a1.5 1.5 0 1 0-3 0v9a2.5 2.5 0 0 0 5 0V5a.5.5 0 0 1 1 0v7a3.5 3.5 0 1 1-7 0z"/>
+                            </svg>
+                        </label>
+                        
+                        <!-- Чекбокс -->
+                        <label class="custom-checkbox">
+                            <input type="checkbox" id="code-input">
+                            <span class="checkmark"></span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <!-- Модальные окна -->
+    {% include 'modals/nickname_modal.html' %}
+    {% include 'modals/create_group_modal.html' %}
+    {% include 'modals/requests_modal.html' %}
+    {% include 'modals/add_user_modal.html' %}
+    {% include 'modals/about_user_modal.html' %}
+
+    <script src="https://code.jquery.com/jquery-3.3.1.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.0/socket.io.min.js"></script> <!-- Подключаем библиотеку для работы с сокетами -->
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}"></script> <!-- Подключаем скрипты для работы дашборда -->
+    <script src="{{ url_for('static', filename='js/chat.js') }}"></script> <!-- Подключаем скрипты для работы чата -->
+    <script src="{{ url_for('static', filename='js/group_request.js') }}"></script> <!-- Подключаем скрипты для работы с группами -->
+    <script src="{{ url_for('static', filename='js/friend_request.js') }}"></script> <!-- Подключаем скрипты для работы с друзьями -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.14.7/umd/popper.min.js"></script>
+    <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.3.1/js/bootstrap.min.js"></script>
+</body>
+</html>
+
+%%=============index.html========%%
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Басты бет</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            text-align: center;
+        }
+        .container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 300px;
+        }
+        h1 {
+            margin-bottom: 20px;
+            font-size: 24px;
+        }
+        a {
+            display: block;
+            margin: 10px 0;
+            padding: 10px;
+            background-color: #007bff;
+            color: #fff;
+            text-decoration: none;
+            border-radius: 4px;
+            transition: background-color 0.3s ease;
+        }
+        a:hover {
+            background-color: #0056b3;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Қош келдіңіз!</h1>
+        <a href="{{ url_for('auth.register') }}">Тіркелу</a>
+        <a href="{{ url_for('auth.login') }}">Кіру</a>
+    </div>
+</body>
+</html>
+%%=============login.html========%%
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Кіру</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .form-container {
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 300px;
+        }
+        .form-container h2 {
+            margin-bottom: 20px;
+            font-size: 24px;
+            text-align: center;
+        }
+        .form-container input {
+            width: 100%;
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .form-container button {
+            width: 100%;
+            padding: 10px;
+            background-color: #007bff;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .form-container button:hover {
+            background-color: #0056b3;
+        }
+        .flash-messages {
+            margin-bottom: 15px;
+        }
+        .flash-messages .error {
+            color: #dc3545;
+        }
+        .flash-messages .success {
+            color: #28a745;
+        }
+    </style>
+</head>
+<body>
+    <div class="form-container">
+        <h2>Вход</h2>
+        <div class="flash-messages">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+        </div>
+        <form method="POST">
+            <input type="text" name="username" placeholder="Имя пользователя" required>
+            <input type="password" name="password" placeholder="Пароль" required>
+            <button type="submit">Кіру</button>
+        </form>
+        <p>Аккаунт жоқ па? <a href="{{ url_for('auth.register') }}">Регистрация өту</a></p>
+    </div>
+</body>
+</html>
+%%=============profile.html========%%
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Профильді орнату</title>
+    <!-- Bootstrap 5 CSS -->
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <!-- Bootstrap Icons (для иконок) -->
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.10.5/font/bootstrap-icons.css">
+    <style>
+      body {
+        background-color: #f8f9fa;
+      }
+      .profile-img {
+        width: 150px;
+        height: 150px;
+        object-fit: cover;
+        border-radius: 50%;
+        border: 3px solid #fff;
+      }
+      .file-input {
+        position: absolute;
+        opacity: 0;
+        width: 150px;
+        height: 150px;
+        cursor: pointer;
+      }
+      .img-container {
+        position: relative;
+        display: inline-block;
+      }
+      .upload-icon {
+        position: absolute;
+        bottom: 0;
+        right: 0;
+        background: rgba(0, 0, 0, 0.6);
+        border-radius: 50%;
+        padding: 5px;
+        color: #fff;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container py-4">
+      <div class="row">
+        <!-- Боковая панель с пунктами настройки -->
+        <div class="col-md-3 mb-4">
+        <div class="card">
+            <a class="btn btn-primary" id="back-btn" href="{{ url_for('dashboard.dashboard') }}">Артқа</a>
+        </div>
+          <div class="list-group" id="list-tab" role="tablist">
+            <a class="list-group-item list-group-item-action active" id="list-personal-list" data-bs-toggle="list" href="#list-personal" role="tab">
+              <i class="bi bi-person"></i> Жеке деректер
+            </a>
+            <a class="list-group-item list-group-item-action" id="list-security-list" data-bs-toggle="list" href="#list-security" role="tab">
+              <i class="bi bi-lock"></i> Қауіпсіздік
+            </a>
+            <a class="list-group-item list-group-item-action" id="list-notifications-list" data-bs-toggle="list" href="#list-notifications" role="tab">
+              <i class="bi bi-bell"></i> Хабарламалар (әзірлеуде)
+            </a>
+            <!-- Можно добавить и другие пункты -->
+          </div>
+        </div>
+
+        <!-- Основное окно для изменения настроек -->
+        <div class="col-md-9">
+          <div class="card shadow">
+            <div class="card-header bg-primary text-white">
+              <h4 class="mb-0" id="content-title">Профильді орнату</h4>
+            </div>
+            <div class="card-body">
+              <div class="tab-content" id="nav-tabContent">
+                <!-- Раздел "Личные данные" -->
+                <div class="tab-pane fade show active" id="list-personal" role="tabpanel" aria-labelledby="list-personal-list">
+                  <form method="post" enctype="multipart/form-data">
+                    <!-- Аватар профиля с возможностью загрузки -->
+                    <div class="text-center mb-4">
+                      <div class="img-container">
+                        <!-- Если у пользователя задан аватар, он будет отображён, иначе используется аватар по умолчанию -->
+                        <img src="{{ url_for('static', filename=(current_user.avatar_url or 'uploads/default.png')) }}" 
+                             alt="Profile Image" class="profile-img">
+                        <label for="profileImage" class="upload-icon">
+                          <i class="bi bi-camera"></i>
+                        </label>
+                        <input type="file" id="profileImage" class="file-input" name="avatar" accept="image/*">
+                      </div>
+                    </div>
+                    <!-- Поле для имени -->
+                    <div class="mb-3">
+                      <label for="fullName" class="form-label">Аты</label>
+                      <input type="text" class="form-control" id="fullName" placeholder="То какое имя будет отображаться в чатах"
+                             value="{{ current_user.username }}">
+                    </div>
+                    <!-- Поле для электронной почты -->
+                    <div class="mb-3">
+                      <label for="email" class="form-label">Электрондық пошта</label>
+                      <input type="email" class="form-control" id="email" placeholder="Введите email"
+                             value="{{ current_user.email if current_user.email else '' }}">
+                    </div>
+                    <!-- Поле для описания о себе -->
+                    <div class="mb-3">
+                      <label for="about" class="form-label">Өзі туралы</label>
+                      <textarea class="form-control" id="about" rows="3" placeholder="Расскажите немного о себе" maxlength="500">{{ current_user.about if current_user.about else '' }}</textarea>
+                    </div>
+                    <!-- Кнопка сохранения -->
+                    <div class="d-grid">
+                      <button type="submit" class="btn btn-primary">Өзгерістерді сақтау</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- Раздел "Безопасность" -->
+                <div class="tab-pane fade" id="list-security" role="tabpanel" aria-labelledby="list-security-list">
+                  <form>
+                    <!-- Поле для ввода текущего пароля -->
+                    <div class="mb-3">
+                      <label for="currentPassword" class="form-label">Ағымдағы құпия сөз</label>
+                      <input type="password" class="form-control" id="currentPassword" placeholder="Введите текущий пароль">
+                    </div>
+                    <!-- Поле для нового пароля -->
+                    <div class="mb-3">
+                      <label for="newPassword" class="form-label">Жаңа құпия сөз</label>
+                      <input type="password" class="form-control" id="newPassword" placeholder="Введите новый пароль">
+                    </div>
+                    <!-- Подтверждение нового пароля -->
+                    <div class="mb-3">
+                      <label for="confirmPassword" class="form-label">Жаңа құпия сөзді растаңыз</label>
+                      <input type="password" class="form-control" id="confirmPassword" placeholder="Подтвердите новый пароль">
+                    </div>
+                    <!-- Кнопка сохранения -->
+                    <div class="d-grid">
+                      <button type="submit" class="btn btn-primary">Құпия сөзді жаңарту</button>
+                    </div>
+                  </form>
+                </div>
+
+                <!-- Раздел "Уведомления" -->
+                <div class="tab-pane fade" id="list-notifications" role="tabpanel" aria-labelledby="list-notifications-list">
+                  <form>
+                    <!-- Настройка email уведомлений -->
+                    <div class="form-check form-switch mb-3">
+                      <input class="form-check-input" type="checkbox" id="emailNotifications" disabled>
+                      <label class="form-check-label" for="emailNotifications">Email хабарлама</label>
+                    </div>
+                    <!-- Настройка push уведомлений -->
+                    <div class="form-check form-switch mb-3">
+                      <input class="form-check-input" type="checkbox" id="pushNotifications" disabled>
+                      <label class="form-check-label" for="pushNotifications">Push хабарлама</label>
+                    </div>
+                    <!-- Настройка SMS уведомлений -->
+                    <div class="form-check form-switch mb-3">
+                      <input class="form-check-input" type="checkbox" id="smsNotifications" disabled>
+                      <label class="form-check-label" for="smsNotifications">SMS хабарлама</label>
+                    </div>
+                    <!-- Кнопка сохранения -->
+                    <div class="d-grid">
+                      <button type="submit" class="btn btn-primary">Хабарландыру параметрлерін сақтау</button>
+                    </div>
+                  </form>
+                </div>
+              </div> <!-- tab-content -->
+            </div>
+          </div>
+        </div> <!-- col-md-9 -->
+      </div> <!-- row -->
+    </div> <!-- container -->
+
+    <!-- Bootstrap 5 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="{{ url_for('static', filename='js/profile.js') }}"></script> <!-- Скрипт отправки аватарки -->
+  </body>
+</html>
+
+%%=============register.html========%%
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Регистрация</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        form {
+            display: flex;
+            flex-direction: column;
+        }
+        .form-container {
+            display: flex;
+            flex-direction: column;
+            background-color: #fff;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+            width: 300px;
+        }
+        .form-container h2 {
+            margin-bottom: 20px;
+            font-size: 24px;
+            text-align: center;
+        }
+        .form-container input {
+            padding: 10px;
+            margin-bottom: 15px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+        }
+        .form-container button {
+            width: 100%;
+            padding: 10px;
+            background-color: #28a745;
+            color: #fff;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        .form-container button:hover {
+            background-color: #218838;
+        }
+
+        .form-container :disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        .form-container footer {
+            align-items: center; 
+            display: flex; 
+            justify-content: center
+        }
+
+        .flash-messages {
+            margin-bottom: 15px;
+        }
+        .flash-messages .error {
+            color: #dc3545;
+        }
+        .flash-messages .success {
+            color: #28a745;
+        }
+    </style>
+    <script>
+        // Функция для проверки паролей
+        function checkPasswordsMatch() {
+            var password = document.getElementsByName("password")[0].value;
+            var confirmPassword = document.getElementsByName("confirm_password")[0].value;
+            var submitButton = document.querySelector("button[type='submit']");
+
+            if (password !== confirmPassword) {
+                // Если пароли не совпадают, отключаем кнопку отправки и показываем сообщение
+                submitButton.disabled = true;
+            } else {
+                // Если пароли совпадают, разрешаем отправку
+                submitButton.disabled = false;
+            }
+        }
+
+        // Добавляем обработчик на изменение паролей
+        window.onload = function() {
+            document.getElementsByName("password")[0].addEventListener("input", checkPasswordsMatch);
+            document.getElementsByName("confirm_password")[0].addEventListener("input", checkPasswordsMatch);
+        }
+    </script>
+</head>
+<body>
+    <div class="form-container">
+        <h2>Регистрация</h2>
+        <div class="flash-messages">
+            {% with messages = get_flashed_messages(with_categories=true) %}
+                {% if messages %}
+                    {% for category, message in messages %}
+                        <div class="{{ category }}">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+        </div>
+        <form method="POST">
+            <input type="text" name="username" placeholder="Имя пользователя" required>
+            <input type="email" name="email" placeholder="Электронная почта" required>
+            <input type="password" name="password" placeholder="Пароль" required>
+            <input type="password" name="confirm_password" placeholder="Повторите пароль" required>
+            <button type="submit" disabled>Регистрация өту</button>
+        </form>
+        <div id="footer">
+            <p>Есептік жазба барма? <a href="{{ url_for('auth.login') }}">Кіру</a></p>
+        </div>
+    </div>
+</body>
+</html>

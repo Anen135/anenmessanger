@@ -3,18 +3,13 @@ from flask_login import current_user, login_required
 
 dashboard_bp = Blueprint('dashboard', __name__)
 
-# Убедитесь, что только авторизованный пользователь может получить доступ к данному маршруту
+# Убедимся, что только авторизованный пользователь может получить доступ к данному маршруту
 @dashboard_bp.route('/dashboard')
 @login_required
 def dashboard():
-    # Получаем всех друзей пользователя
-    friends = current_user.friends.all()
-
-    # Получаем все чаты, включая друзей
-    chats = friends
-
-    # Получаем все группы, к которым принадлежит пользователь
-    groups = current_user.groups.all()
+    friends = current_user.friends.all() # Получаем всех друзей пользователя
+    chats = friends # Получаем все чаты, включая друзей
+    groups = current_user.groups.all() # Получаем все группы, к которым принадлежит пользователь
 
     return render_template('dashboard.html', user=current_user, chats=chats, groups=groups)
 

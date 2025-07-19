@@ -9,12 +9,12 @@ def create_app():
     app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///users.db'
     app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
     
-    # Инициализация папки загрузки аватарок
+    # Аватарларды жүктеу қалтасын инициализациялау
     upload_folder = os.join(app.root_path, 'static', 'uploads')
     osmakedirs(upload_folder, exist_ok=True)
     app.config['UPLOAD_FOLDER'] = upload_folder
     
     return app
 
-# Для WebSocket подключаем SocketIO
+# WebSocket үшін SocketIO қосыңыз
 socketio = SocketIO(async_mode = 'eventlet')

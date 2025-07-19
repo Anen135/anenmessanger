@@ -1,6 +1,6 @@
 from flask import Blueprint, render_template, redirect, url_for, request, jsonify
 from flask_login import current_user, login_required
-from models import db, Group, GroupMembership, User, Friendship
+from models import db, Group, GroupMembership, User, Friendship, GroupJoinRequest
 from flask_socketio import emit
 from init import socketio
 

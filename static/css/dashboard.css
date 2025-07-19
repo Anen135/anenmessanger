@@ -36,10 +36,16 @@ body {
     flex-direction: column;
 }
 
+
+
 .chats-section {
     padding: 20px;
     flex-grow: 1;
     overflow-y: auto;
+}
+
+.nav-link.active {
+    color:#00bb00;
 }
 
 .chat-window {
@@ -47,6 +53,10 @@ body {
     display: flex;
     flex-direction: column;
     height: calc(100% - 50px);
+}
+
+.chat-window iframe {
+    max-width: 800px;
 }
 
 .messages {
@@ -126,4 +136,99 @@ body {
     height: 40px;
     border-radius: 50%;
     object-fit: cover;
+}
+
+/* стили при наведении курсора на checkbox */
+.custom-checkbox:not(:disabled):not(:checked)+label:hover::before {
+    border-color: #b3d7ff;
+  }
+
+  
+/* Основной стиль для контейнера */
+.chat-input {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px;
+    background-color: #fff;
+    border-top: 1px solid #dee2e6;
+}
+
+/* Стиль для обычного поля ввода */
+#message-input {
+    flex-grow: 1;
+    border: 1px solid #ccc;
+    padding: 12px;
+    margin-right: 10px;
+    border-radius: 4px;
+    font-size: 14px;
+}
+
+/* Кастомный чекбокс */
+.custom-checkbox {
+    position: relative;
+    display: inline-block;
+    width: 24px;
+    height: 24px;
+}
+
+.custom-checkbox input {
+    opacity: 0;
+    position: absolute;
+    width: 100%;
+    height: 100%;
+    cursor: pointer;
+}
+
+.custom-checkbox .checkmark {
+    position: absolute;
+    top: 0;
+    left: 0;
+    height: 100%;
+    width: 100%;
+    border: 2px solid #007bff;
+    background-color: #fff;
+    border-radius: 4px;
+    transition: background-color 0.3s ease, border-color 0.3s ease;
+}
+
+/* Стилизация чекбокса при активном состоянии */
+.custom-checkbox input:checked + .checkmark {
+    background-color: #007bff;
+    border-color: #007bff;
+}
+
+.custom-checkbox input:checked + .checkmark::after {
+    content: "";
+    position: absolute;
+    top: 6px;
+    left: 6px;
+    width: 10px;
+    height: 10px;
+    background-color: #fff;
+    border-radius: 50%;
+}
+
+.btn-custom svg {
+    width: 24px;
+    height: 24px;
+}
+
+.paperclip-icon {
+    width: 24px;
+    height: 24px;
+}
+
+/* Кнопка отправки */
+#send-button {
+    background-color: #007bff;
+    color: white;
+    border: none;
+    padding: 12px 20px;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+#send-button:hover {
+    background-color: #0056b3;
 }

@@ -4,7 +4,7 @@ from flask_login import UserMixin
 
 db = SQLAlchemy()
 
-# Модель для таблицы "друзья" - связь многие ко многим
+# "Достар" кестесінің моделі-көптеген адамдармен байланыс
 class Friendship(db.Model, UserMixin):
     __tablename__ = 'friendship'
 
@@ -12,7 +12,7 @@ class Friendship(db.Model, UserMixin):
     user2_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Модель пользователя
+# Пайдаланушы моделі
 class User(db.Model, UserMixin):
     id = db.Column(db.Integer, primary_key=True)
     username = db.Column(db.String(150), nullable=False, unique=True)
@@ -26,7 +26,7 @@ class User(db.Model, UserMixin):
     sms_notification = db.Column(db.Boolean, nullable=False, default=True)
     
 
-    # Связь многие ко многим для списка друзей
+    # Достар тізімі үшін көптеген байланыстар
     friends = db.relationship('User',
                               secondary='friendship',
                               primaryjoin=(id == Friendship.user1_id),
@@ -38,7 +38,7 @@ class User(db.Model, UserMixin):
     def get_id(self):
         return str(self.id)
 
-# Модель для запроса на дружбу (удаляется после принятия или отклонения)
+# Достықты сұрауға арналған Модель (қабылданғаннан немесе қабылданбағаннан кейін жойылады)
 class FriendRequest(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sender_id = db.Column(db.Integer, db.ForeignKey('user.id'))
@@ -48,7 +48,7 @@ class FriendRequest(db.Model):
     sender = db.relationship('User', foreign_keys=[sender_id])  
     receiver = db.relationship('User', foreign_keys=[receiver_id])
 
-# Модель для запросов на добавление в группу
+# Топқа қосу сұрауларына арналған Модель
 class GroupJoinRequest(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     group_id = db.Column(db.Integer, db.ForeignKey('group.id'), nullable=False)
@@ -60,7 +60,7 @@ class GroupJoinRequest(db.Model):
     group = db.relationship('Group', foreign_keys=[group_id])
 
 
-# Модель для групповых чатов
+# Топтық чаттарға арналған Модель
 class Group(db.Model):
     __tablename__ = 'group'
     id = db.Column(db.Integer, primary_key=True)
@@ -73,23 +73,30 @@ class Group(db.Model):
                               secondary='group_membership',
                               backref=db.backref('groups', lazy='dynamic'))
 
-# Промежуточная таблица для связи "многие ко многим" между группами и пользователями
+# Топтар мен пайдаланушылар арасындағы көп-көп байланысқа арналған аралық кесте
 class GroupMembership(db.Model):
     __tablename__ = 'group_membership'
     group_id = db.Column(db.Integer, db.ForeignKey('group.id'), primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), primary_key=True)
     joined_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Изменение модели сообщений для поддержки групповых сообщений
+# Топтық хабарламаларды қолдау үшін хабарлама үлгісін өзгерту
 class Message(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     sender_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
-    receiver_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)  # Для личных сообщений
-    group_id = db.Column(db.Integer, db.ForeignKey('group.id'), nullable=True)  # Для сообщений в группе
+    receiver_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=True)  # Жеке хабарламалар үшін
+    group_id = db.Column(db.Integer, db.ForeignKey('group.id'), nullable=True)  # Топтағы хабарламалар үшін
     content = db.Column(db.Text)
+    
     timestamp = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    # Новые поля для хранения файлов
+    file_name = db.Column(db.String(255), nullable=True)  # Оригинальное имя файла
+    file_path = db.Column(db.String(512), nullable=True)  # Путь к файлу на сервере
+    file_type = db.Column(db.String(50), nullable=True)  # MIME-тип файла
+    file_size = db.Column(db.Integer, nullable=True)  # Размер файла в байтах
 
-    # Связь для отправителя и получателя
+    # Жіберуші мен алушы үшін байланыс
     sender = db.relationship('User', foreign_keys=[sender_id])
     receiver = db.relationship('User', foreign_keys=[receiver_id])
     group = db.relationship('Group', foreign_keys=[group_id])

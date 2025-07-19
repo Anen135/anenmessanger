@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Вход</title>
+    <title>Кіру</title>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -71,9 +71,9 @@
         <form method="POST">
             <input type="text" name="username" placeholder="Имя пользователя" required>
             <input type="password" name="password" placeholder="Пароль" required>
-            <button type="submit">Войти</button>
+            <button type="submit">Кіру</button>
         </form>
-        <p>Нет аккаунта? <a href="{{ url_for('auth.register') }}">Зарегистрироваться</a></p>
+        <p>Аккаунт жоқ па? <a href="{{ url_for('auth.register') }}">Регистрация өту</a></p>
     </div>
 </body>
 </html>

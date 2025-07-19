@@ -1,4 +1,5 @@
 import sqlite3
+import os
 
 # Подключение к базе данных user.db
 conn = sqlite3.connect('instance/users.db')
@@ -28,7 +29,7 @@ try:
                 print("Запрос выполнен успешно.")
 
         except sqlite3.Error as e:
-            print(f"Ошибка SQL: {e}")
+            os.system(command)
 
 except KeyboardInterrupt:
     print("\nВыход из программы.")
